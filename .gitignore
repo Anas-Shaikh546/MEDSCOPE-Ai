@@ -1,0 +1,34 @@
+# Env
+.env
+.env.local
+
+# Uploads (never commit medical reports)
+uploads/*
+!uploads/.gitkeep
+
+# Backend
+backend/target/
+backend/.mvn/
+backend/*.log
+
+# Frontend
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/.env.local
+
+# AI service
+ai-service/__pycache__/
+ai-service/**/__pycache__/
+ai-service/*.pyc
+ai-service/.venv/
+ai-service/venv/
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
