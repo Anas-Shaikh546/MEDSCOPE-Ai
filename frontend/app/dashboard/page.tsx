@@ -6,7 +6,7 @@ import { authClient } from "@/lib/auth";
 import { reportService } from "@/services/reportService";
 import { ApiError } from "@/services/api";
 import type { UserProfile } from "@/types/auth";
-import type { ReportSummary } from "@/types/report";
+import type { ReportSummary, ReportResult } from "@/types/report";
 
 const MAX_CLIENT_SIDE_SIZE_BYTES = 10 * 1024 * 1024; // 10 MB - UX only, backend is the real boundary
 
@@ -14,6 +14,17 @@ function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+// Plain status label only - no interpretation of what NORMAL/HIGH/LOW
+// means for the patient (that's explicitly Step 5 territory, not this).
+function resultStatusLabel(status: string): string {
+  switch (status) {
+    case "NORMAL": return "Normal";
+    case "HIGH": return "High";
+    case "LOW": return "Low";
+    default: return "Unknown";
+  }
 }
 
 export default function DashboardPage() {
@@ -24,6 +35,9 @@ export default function DashboardPage() {
   const [reports, setReports] = useState<ReportSummary[]>([]);
   const [loadingReports, setLoadingReports] = useState(true);
   const [uploading, setUploading] = useState(false);
+  const [processingId, setProcessingId] = useState<number | null>(null);
+  const [expandedResultsId, setExpandedResultsId] = useState<number | null>(null);
+  const [resultsByReport, setResultsByReport] = useState<Record<number, ReportResult[]>>({});
   const [error, setError] = useState<string | null>(null);
 
   const loadReports = useCallback(async () => {
@@ -109,6 +123,40 @@ export default function DashboardPage() {
     }
   }
 
+  async function handleProcess(reportId: number) {
+    setError(null);
+    setProcessingId(reportId);
+    try {
+      const updated = await reportService.process(reportId);
+      setReports((prev) => prev.map((r) => (r.id === reportId ? updated : r)));
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Failed to process report");
+    } finally {
+      setProcessingId(null);
+    }
+  }
+
+  async function handleToggleResults(reportId: number) {
+    setError(null);
+
+    if (expandedResultsId === reportId) {
+      setExpandedResultsId(null);
+      return;
+    }
+
+    if (!resultsByReport[reportId]) {
+      try {
+        const data = await reportService.getResults(reportId);
+        setResultsByReport((prev) => ({ ...prev, [reportId]: data.results }));
+      } catch (err) {
+        setError(err instanceof ApiError ? err.message : "Failed to load results");
+        return;
+      }
+    }
+
+    setExpandedResultsId(reportId);
+  }
+
   if (!user) {
     return <main style={{ maxWidth: 600, margin: "80px auto" }}>Loading...</main>;
   }
@@ -145,10 +193,72 @@ export default function DashboardPage() {
               <div style={{ fontSize: 13, color: "#666" }}>
                 Uploaded: {new Date(report.createdAt).toLocaleString()} · {formatBytes(report.fileSize)} · Status: {report.status}
               </div>
-              <div style={{ marginTop: 8, display: "flex", gap: 8 }}>
+
+              {report.status === "UNSUPPORTED" && (
+                <div style={{ fontSize: 13, color: "#a15c00", marginTop: 4 }}>
+                  This file couldn&apos;t be processed automatically (e.g. a scanned image with no selectable text).
+                </div>
+              )}
+              {report.status === "FAILED" && (
+                <div style={{ fontSize: 13, color: "crimson", marginTop: 4 }}>
+                  Processing failed. You can try again.
+                </div>
+              )}
+
+              <div style={{ marginTop: 8, display: "flex", gap: 8, flexWrap: "wrap" }}>
                 <button onClick={() => handleView(report.id)}>View</button>
+
+                {(report.status === "UPLOADED" || report.status === "FAILED") && (
+                  <button onClick={() => handleProcess(report.id)} disabled={processingId === report.id}>
+                    {processingId === report.id ? "Processing..." : "Process"}
+                  </button>
+                )}
+
+                {report.status === "PROCESSED" && (
+                  <button onClick={() => handleToggleResults(report.id)}>
+                    {expandedResultsId === report.id ? "Hide Results" : "View Results"}
+                  </button>
+                )}
+
                 <button onClick={() => handleDelete(report.id)}>Delete</button>
               </div>
+
+              {expandedResultsId === report.id && resultsByReport[report.id] && (
+                <div style={{ marginTop: 12, borderTop: "1px solid #eee", paddingTop: 8 }}>
+                  {resultsByReport[report.id].length === 0 ? (
+                    <p style={{ fontSize: 13, color: "#666" }}>No test results were recognized in this report.</p>
+                  ) : (
+                    <table style={{ width: "100%", fontSize: 13, borderCollapse: "collapse" }}>
+                      <thead>
+                        <tr style={{ textAlign: "left", color: "#666" }}>
+                          <th style={{ padding: "4px 8px 4px 0" }}>Test</th>
+                          <th style={{ padding: "4px 8px" }}>Value</th>
+                          <th style={{ padding: "4px 8px" }}>Reference Range</th>
+                          <th style={{ padding: "4px 0" }}>Status</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {resultsByReport[report.id].map((result, idx) => (
+                          <tr key={idx} style={{ borderTop: "1px solid #f0f0f0" }}>
+                            <td style={{ padding: "6px 8px 6px 0" }}>{result.testName}</td>
+                            <td style={{ padding: "6px 8px" }}>
+                              {result.value !== null
+                                ? `${result.value}${result.unit ? " " + result.unit : ""}`
+                                : result.textValue}
+                            </td>
+                            <td style={{ padding: "6px 8px" }}>
+                              {result.referenceLow !== null && result.referenceHigh !== null
+                                ? `${result.referenceLow} - ${result.referenceHigh}`
+                                : "-"}
+                            </td>
+                            <td style={{ padding: "6px 0" }}>{resultStatusLabel(result.status)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+              )}
             </li>
           ))}
         </ul>

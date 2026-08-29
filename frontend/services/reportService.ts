@@ -1,6 +1,6 @@
 import { api } from "@/services/api";
 import { authClient } from "@/lib/auth";
-import type { ReportSummary } from "@/types/report";
+import type { ReportSummary, ReportResultsResponse } from "@/types/report";
 
 /**
  * Report-specific calls, built on top of api.ts - components should
@@ -22,6 +22,16 @@ export const reportService = {
   async remove(reportId: number): Promise<void> {
     const token = authClient.getToken();
     await api.delete<void>(`/reports/${reportId}`, token);
+  },
+
+  async process(reportId: number): Promise<ReportSummary> {
+    const token = authClient.getToken();
+    return api.post<ReportSummary>(`/reports/${reportId}/process`, {}, token);
+  },
+
+  async getResults(reportId: number): Promise<ReportResultsResponse> {
+    const token = authClient.getToken();
+    return api.get<ReportResultsResponse>(`/reports/${reportId}/results`, token);
   },
 
   /**
