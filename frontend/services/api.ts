@@ -57,4 +57,49 @@ export const api = {
 
   post: <T>(path: string, body: unknown, authToken?: string | null) =>
     request<T>(path, { method: "POST", body: JSON.stringify(body), authToken }),
+
+  delete: <T>(path: string, authToken?: string | null) =>
+    request<T>(path, { method: "DELETE", authToken }),
+
+  /**
+   * Multipart upload - bypasses the JSON Content-Type header that
+   * request() sets by default, so the browser can set its own
+   * multipart boundary.
+   */
+  postForm: async <T>(path: string, formData: FormData, authToken?: string | null): Promise<T> => {
+    const response = await fetch(`${API_BASE_URL}${path}`, {
+      method: "POST",
+      headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
+      body: formData,
+    });
+
+    if (!response.ok) {
+      let message = `Upload failed with status ${response.status}`;
+      try {
+        const errorBody = (await response.json()) as ApiErrorResponse;
+        message = errorBody.message ?? message;
+      } catch {
+        // response body wasn't JSON - fall back to the generic message
+      }
+      throw new ApiError(response.status, message);
+    }
+
+    return (await response.json()) as T;
+  },
+
+  /**
+   * Raw-bytes download (PDF file) rather than JSON - used for viewing
+   * a report's actual file contents.
+   */
+  getBlob: async (path: string, authToken?: string | null): Promise<Blob> => {
+    const response = await fetch(`${API_BASE_URL}${path}`, {
+      headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
+    });
+
+    if (!response.ok) {
+      throw new ApiError(response.status, `Download failed with status ${response.status}`);
+    }
+
+    return response.blob();
+  },
 };
