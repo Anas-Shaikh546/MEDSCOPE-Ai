@@ -76,4 +76,46 @@ class ResultValidatorTest {
 
         assertEquals("13.8", result.getRawValue());
     }
+
+    @Test
+    void upperThresholdOnly_valueBelowThreshold_isNormal() {
+        // "Total Cholesterol 185 mg/dL < 200" - 185 is desirable
+        ExtractedResult extracted = new ExtractedResult(
+                "Total Cholesterol", "total_cholesterol", "185", 185.0, null, "mg/dL", null, 200.0, 0.90);
+
+        ReportResult result = validator.toReportResult(1L, extracted);
+
+        assertEquals(ResultStatus.NORMAL, result.getStatus());
+    }
+
+    @Test
+    void upperThresholdOnly_valueAboveThreshold_isHigh() {
+        ExtractedResult extracted = new ExtractedResult(
+                "Total Cholesterol", "total_cholesterol", "220", 220.0, null, "mg/dL", null, 200.0, 0.90);
+
+        ReportResult result = validator.toReportResult(1L, extracted);
+
+        assertEquals(ResultStatus.HIGH, result.getStatus());
+    }
+
+    @Test
+    void lowerThresholdOnly_valueAboveThreshold_isNormal() {
+        // "HDL 55 mg/dL > 40" - 55 is desirable
+        ExtractedResult extracted = new ExtractedResult(
+                "HDL", "hdl", "55", 55.0, null, "mg/dL", 40.0, null, 0.90);
+
+        ReportResult result = validator.toReportResult(1L, extracted);
+
+        assertEquals(ResultStatus.NORMAL, result.getStatus());
+    }
+
+    @Test
+    void lowerThresholdOnly_valueBelowThreshold_isLow() {
+        ExtractedResult extracted = new ExtractedResult(
+                "HDL", "hdl", "30", 30.0, null, "mg/dL", 40.0, null, 0.90);
+
+        ReportResult result = validator.toReportResult(1L, extracted);
+
+        assertEquals(ResultStatus.LOW, result.getStatus());
+    }
 }

@@ -77,12 +77,40 @@ class MedicalResultExtractorTest {
 
     @Test
     void unrecognizedTestNameGetsNullNormalizedName_notAGuess() {
-        List<String> lines = normalizer.toLines("Vitamin D 32 ng/mL 30 - 100");
+        List<String> lines = normalizer.toLines("Homocysteine 12 umol/L 5 - 15");
 
         List<ExtractedResult> results = extractor.extract(lines);
 
         assertEquals(1, results.size());
         assertNull(results.get(0).normalizedTestName());
+    }
+
+    @Test
+    void extractsNumericResultWithUpperThreshold() {
+        List<String> lines = normalizer.toLines("Total Cholesterol 185 mg/dL < 200");
+
+        List<ExtractedResult> results = extractor.extract(lines);
+
+        assertEquals(1, results.size());
+        ExtractedResult r = results.get(0);
+        assertEquals(185.0, r.numericValue());
+        assertNull(r.referenceLow());
+        assertEquals(200.0, r.referenceHigh());
+        assertEquals("total_cholesterol", r.normalizedTestName());
+    }
+
+    @Test
+    void extractsNumericResultWithLowerThreshold() {
+        List<String> lines = normalizer.toLines("HDL 55 mg/dL > 40");
+
+        List<ExtractedResult> results = extractor.extract(lines);
+
+        assertEquals(1, results.size());
+        ExtractedResult r = results.get(0);
+        assertEquals(55.0, r.numericValue());
+        assertEquals(40.0, r.referenceLow());
+        assertNull(r.referenceHigh());
+        assertEquals("hdl", r.normalizedTestName());
     }
 
     @Test

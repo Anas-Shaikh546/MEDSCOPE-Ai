@@ -35,23 +35,46 @@ public class ResultValidator {
                 .build();
     }
 
+    /**
+     * Handles three cases explicitly, never falling through to a
+     * default: a full two-sided range, a one-sided threshold ("< 200"
+     * or "> 40"), or no range at all. Only the last is UNKNOWN - a
+     * partial range still tells us something real about the value.
+     */
     private ResultStatus computeStatus(ExtractedResult extracted) {
         Double value = extracted.numericValue();
         Double low = extracted.referenceLow();
         Double high = extracted.referenceHigh();
 
-        // Qualitative results, or numeric results with no reference
-        // range in the report, are UNKNOWN - never guessed (4.11, 4.12).
-        if (value == null || low == null || high == null) {
+        // Qualitative results have no numeric value at all.
+        if (value == null) {
             return ResultStatus.UNKNOWN;
         }
 
-        if (value < low) {
-            return ResultStatus.LOW;
+        if (low != null && high != null) {
+            if (value < low) {
+                return ResultStatus.LOW;
+            }
+            if (value > high) {
+                return ResultStatus.HIGH;
+            }
+            return ResultStatus.NORMAL;
         }
-        if (value > high) {
-            return ResultStatus.HIGH;
+
+        // Only an upper threshold is known (e.g. "< 200") - exceeding
+        // it is HIGH, there is no LOW without a lower bound.
+        if (high != null) {
+            return value > high ? ResultStatus.HIGH : ResultStatus.NORMAL;
         }
-        return ResultStatus.NORMAL;
+
+        // Only a lower threshold is known (e.g. "> 40") - falling
+        // short of it is LOW, there is no HIGH without an upper bound.
+        if (low != null) {
+            return value < low ? ResultStatus.LOW : ResultStatus.NORMAL;
+        }
+
+        // No reference information in the report at all - never
+        // guessed (4.11, 4.12).
+        return ResultStatus.UNKNOWN;
     }
 }

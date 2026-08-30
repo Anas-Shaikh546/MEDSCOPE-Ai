@@ -22,3 +22,22 @@ export interface ReportResultsResponse {
   status: string;
   results: ReportResult[];
 }
+
+export interface AnalysisFinding {
+  reportResultId: number;
+  interpretation: string;
+  severity: "NORMAL" | "ATTENTION" | "CONCERN" | "URGENT";
+}
+
+export interface AnalysisResponse {
+  id: number;
+  reportId: number;
+  status: string;
+  summary: string | null;
+  recommendations: string | null;
+  modelName: string | null;
+  modelVersion: string | null;
+  promptVersion: string | null;
+  createdAt: string;
+  findings: AnalysisFinding[];
+}

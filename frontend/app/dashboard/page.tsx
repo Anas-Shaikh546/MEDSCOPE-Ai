@@ -6,7 +6,7 @@ import { authClient } from "@/lib/auth";
 import { reportService } from "@/services/reportService";
 import { ApiError } from "@/services/api";
 import type { UserProfile } from "@/types/auth";
-import type { ReportSummary, ReportResult } from "@/types/report";
+import type { AnalysisResponse, ReportSummary, ReportResult } from "@/types/report";
 
 const MAX_CLIENT_SIDE_SIZE_BYTES = 10 * 1024 * 1024; // 10 MB - UX only, backend is the real boundary
 
@@ -27,6 +27,26 @@ function resultStatusLabel(status: string): string {
   }
 }
 
+function severityLabel(severity: string): string {
+  switch (severity) {
+    case "NORMAL": return "Normal";
+    case "ATTENTION": return "Needs attention";
+    case "CONCERN": return "Concerning";
+    case "URGENT": return "Urgent";
+    default: return severity;
+  }
+}
+
+function severityColor(severity: string): string {
+  switch (severity) {
+    case "NORMAL": return "#176b3a";
+    case "ATTENTION": return "#a15c00";
+    case "CONCERN": return "#b23a00";
+    case "URGENT": return "crimson";
+    default: return "#555";
+  }
+}
+
 export default function DashboardPage() {
   const router = useRouter();
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -36,8 +56,11 @@ export default function DashboardPage() {
   const [loadingReports, setLoadingReports] = useState(true);
   const [uploading, setUploading] = useState(false);
   const [processingId, setProcessingId] = useState<number | null>(null);
+  const [analyzingId, setAnalyzingId] = useState<number | null>(null);
   const [expandedResultsId, setExpandedResultsId] = useState<number | null>(null);
+  const [expandedAnalysisId, setExpandedAnalysisId] = useState<number | null>(null);
   const [resultsByReport, setResultsByReport] = useState<Record<number, ReportResult[]>>({});
+  const [analysisByReport, setAnalysisByReport] = useState<Record<number, AnalysisResponse>>({});
   const [error, setError] = useState<string | null>(null);
 
   const loadReports = useCallback(async () => {
@@ -157,6 +180,44 @@ export default function DashboardPage() {
     setExpandedResultsId(reportId);
   }
 
+  async function handleAnalyze(reportId: number) {
+    setError(null);
+    setAnalyzingId(reportId);
+    try {
+      const analysis = await reportService.analyze(reportId);
+      setAnalysisByReport((prev) => ({ ...prev, [reportId]: analysis }));
+      setExpandedAnalysisId(reportId);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Analysis failed");
+    } finally {
+      setAnalyzingId(null);
+    }
+  }
+
+  async function handleToggleAnalysis(reportId: number) {
+    setError(null);
+    if (expandedAnalysisId === reportId) {
+      setExpandedAnalysisId(null);
+      return;
+    }
+
+    if (!analysisByReport[reportId]) {
+      try {
+        const analysis = await reportService.getAnalysis(reportId);
+        setAnalysisByReport((prev) => ({ ...prev, [reportId]: analysis }));
+      } catch (err) {
+        if (err instanceof ApiError && err.status === 404) {
+          setError("No saved analysis yet. Select Analyze to create one.");
+        } else {
+          setError(err instanceof ApiError ? err.message : "Failed to load analysis");
+        }
+        return;
+      }
+    }
+
+    setExpandedAnalysisId(reportId);
+  }
+
   if (!user) {
     return <main style={{ maxWidth: 600, margin: "80px auto" }}>Loading...</main>;
   }
@@ -215,9 +276,17 @@ export default function DashboardPage() {
                 )}
 
                 {report.status === "PROCESSED" && (
-                  <button onClick={() => handleToggleResults(report.id)}>
-                    {expandedResultsId === report.id ? "Hide Results" : "View Results"}
-                  </button>
+                  <>
+                    <button onClick={() => handleToggleResults(report.id)}>
+                      {expandedResultsId === report.id ? "Hide Results" : "View Results"}
+                    </button>
+                    <button onClick={() => handleAnalyze(report.id)} disabled={analyzingId === report.id}>
+                      {analyzingId === report.id ? "Analyzing..." : "Analyze"}
+                    </button>
+                    <button onClick={() => handleToggleAnalysis(report.id)}>
+                      {expandedAnalysisId === report.id ? "Hide Analysis" : "View Analysis"}
+                    </button>
+                  </>
                 )}
 
                 <button onClick={() => handleDelete(report.id)}>Delete</button>
@@ -258,6 +327,52 @@ export default function DashboardPage() {
                     </table>
                   )}
                 </div>
+              )}
+
+              {expandedAnalysisId === report.id && analysisByReport[report.id] && (
+                <section style={{ marginTop: 12, borderTop: "1px solid #eee", paddingTop: 8 }}>
+                  <h3 style={{ margin: "0 0 8px" }}>AI Analysis</h3>
+                  {analysisByReport[report.id].summary && (
+                    <p style={{ margin: "0 0 8px" }}>{analysisByReport[report.id].summary}</p>
+                  )}
+
+                  {analysisByReport[report.id].findings.length === 0 ? (
+                    <p style={{ fontSize: 13, color: "#666" }}>No individual findings were returned.</p>
+                  ) : (
+                    <ul style={{ paddingLeft: 20, margin: "8px 0" }}>
+                      {analysisByReport[report.id].findings.map((finding) => (
+                        <li key={finding.reportResultId} style={{ marginBottom: 6 }}>
+                          <span style={{ color: severityColor(finding.severity), fontWeight: 600 }}>
+                            {severityLabel(finding.severity)}:
+                          </span>{" "}
+                          {finding.interpretation}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+
+                  {analysisByReport[report.id].recommendations && (
+                    <>
+                      <h4 style={{ margin: "12px 0 4px" }}>Recommendations</h4>
+                      <p style={{ whiteSpace: "pre-line", margin: 0 }}>
+                        {analysisByReport[report.id].recommendations}
+                      </p>
+                    </>
+                  )}
+
+                  <p style={{ fontSize: 12, color: "#666", marginTop: 12, marginBottom: 0 }}>
+                    AI-generated information is not a diagnosis. Discuss medical questions with a qualified clinician.
+                  </p>
+                  <p style={{ fontSize: 12, color: "#666", marginTop: 6, marginBottom: 0 }}>
+                    Model: {analysisByReport[report.id].modelName ?? "Not recorded"}
+                    {analysisByReport[report.id].modelVersion
+                      ? ` (${analysisByReport[report.id].modelVersion})`
+                      : ""}
+                    {analysisByReport[report.id].promptVersion
+                      ? ` · Prompt: ${analysisByReport[report.id].promptVersion}`
+                      : ""}
+                  </p>
+                </section>
               )}
             </li>
           ))}

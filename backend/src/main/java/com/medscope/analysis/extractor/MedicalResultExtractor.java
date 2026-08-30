@@ -13,9 +13,11 @@ import java.util.regex.Pattern;
  * here (Step 4 is facts, not interpretation - see spec Measure 1).
  *
  * Recognizes lines of the form:
- *   "Hemoglobin 13.8 g/dL 13.0 - 17.0"   (numeric + unit + range)
- *   "Glucose 95 mg/dL"                    (numeric + unit, no range)
- *   "HIV Non-reactive"                    (qualitative)
+ *   "Hemoglobin 13.8 g/dL 13.0 - 17.0"    (numeric + unit + two-sided range)
+ *   "Total Cholesterol 185 mg/dL < 200"    (numeric + unit + upper threshold)
+ *   "HDL 55 mg/dL > 40"                     (numeric + unit + lower threshold)
+ *   "Glucose 95 mg/dL"                       (numeric + unit, no range)
+ *   "HIV Non-reactive"                        (qualitative)
  *
  * Confidence is assigned by a fixed rule based on which pattern matched
  * and whether the test name is in the controlled vocabulary - not
@@ -31,6 +33,18 @@ public class MedicalResultExtractor {
     // "TestName  123.4 unit  10.0 - 20.0"
     private static final Pattern NUMERIC_WITH_RANGE = Pattern.compile(
             "^([A-Za-z][A-Za-z0-9 ]*?)\\s+(" + NUM + ")\\s*(" + UNIT + ")?\\s+(" + NUM + ")\\s*-\\s*(" + NUM + ")$"
+    );
+
+    // "TestName  123.4 unit  < 200" - only an upper bound is given
+    // (e.g. desirable cholesterol is "below 200").
+    private static final Pattern NUMERIC_UPPER_THRESHOLD = Pattern.compile(
+            "^([A-Za-z][A-Za-z0-9 ]*?)\\s+(" + NUM + ")\\s*(" + UNIT + ")?\\s*<\\s*(" + NUM + ")$"
+    );
+
+    // "TestName  123.4 unit  > 40" - only a lower bound is given
+    // (e.g. desirable HDL is "above 40").
+    private static final Pattern NUMERIC_LOWER_THRESHOLD = Pattern.compile(
+            "^([A-Za-z][A-Za-z0-9 ]*?)\\s+(" + NUM + ")\\s*(" + UNIT + ")?\\s*>\\s*(" + NUM + ")$"
     );
 
     // "TestName  123.4 unit" (no reference range provided)
@@ -65,6 +79,16 @@ public class MedicalResultExtractor {
             return buildNumericWithRange(rangeMatch);
         }
 
+        Matcher upperThresholdMatch = NUMERIC_UPPER_THRESHOLD.matcher(line);
+        if (upperThresholdMatch.matches()) {
+            return buildNumericThreshold(upperThresholdMatch, true);
+        }
+
+        Matcher lowerThresholdMatch = NUMERIC_LOWER_THRESHOLD.matcher(line);
+        if (lowerThresholdMatch.matches()) {
+            return buildNumericThreshold(lowerThresholdMatch, false);
+        }
+
         Matcher noRangeMatch = NUMERIC_NO_RANGE.matcher(line);
         if (noRangeMatch.matches()) {
             return buildNumericNoRange(noRangeMatch);
@@ -92,6 +116,34 @@ public class MedicalResultExtractor {
 
         String normalized = vocabulary.normalize(testName);
         double confidence = baseConfidence(0.90, normalized);
+
+        return new ExtractedResult(testName, normalized, rawValue, value, null, unit, low, high, confidence);
+    }
+
+    /**
+     * isUpperBound=true for "< threshold" (referenceHigh only),
+     * false for "> threshold" (referenceLow only). Never invents the
+     * missing side of the range - a one-sided threshold stays
+     * one-sided in the stored data (4.11), ResultValidator handles
+     * status for a partial range explicitly rather than treating it
+     * as UNKNOWN.
+     */
+    private ExtractedResult buildNumericThreshold(Matcher m, boolean isUpperBound) {
+        String testName = m.group(1).trim();
+        String rawValue = m.group(2);
+        String unit = emptyToNull(m.group(3));
+        Double threshold = parseNumber(m.group(4));
+        Double value = parseNumber(rawValue);
+
+        if (value == null || threshold == null) {
+            return null;
+        }
+
+        String normalized = vocabulary.normalize(testName);
+        double confidence = baseConfidence(0.85, normalized);
+
+        Double low = isUpperBound ? null : threshold;
+        Double high = isUpperBound ? threshold : null;
 
         return new ExtractedResult(testName, normalized, rawValue, value, null, unit, low, high, confidence);
     }
