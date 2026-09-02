@@ -1,6 +1,7 @@
 package com.medscope.report.controller;
 
 import com.medscope.report.dto.ReportResponse;
+import com.medscope.report.dto.UpdateReportRequest;
 import com.medscope.report.entity.Report;
 import com.medscope.report.service.ReportService;
 import com.medscope.security.CurrentUser;
@@ -75,5 +76,22 @@ public class ReportController {
     ) {
         reportService.delete(reportId, authenticatedUserId);
         return ResponseEntity.noContent().build();
+    }
+
+    /**
+     * The only mutable field on an existing report is testDate.
+     * Everything else (filename, status, ownership, extracted results)
+     * is immutable after upload - this endpoint cannot touch any of it.
+     * testDate accepts either a valid date or an explicit JSON null to
+     * clear a previously entered date.
+     */
+    @PatchMapping("/{reportId}")
+    public ReportResponse updateTestDate(
+            @CurrentUser Long authenticatedUserId,
+            @PathVariable Long reportId,
+            @RequestBody UpdateReportRequest request
+    ) {
+        Report report = reportService.updateTestDate(reportId, authenticatedUserId, request.testDate());
+        return ReportResponse.from(report);
     }
 }

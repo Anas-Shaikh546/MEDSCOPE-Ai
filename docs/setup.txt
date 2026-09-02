@@ -1,0 +1,7 @@
+$env:DB_URL="jdbc:postgresql://localhost:5432/medscope"
+>> $env:DB_USERNAME="medscope"
+>> $env:DB_PASSWORD="change_me"
+>> $env:JWT_SECRET="a-long-random-string-at-least-32-characters-long"
+>> $env:JWT_EXPIRATION_MS="86400000"
+>> $env:UPLOAD_DIR="./uploads"
+>> $env:AI_SERVICE_URL="http://localhost:8000"

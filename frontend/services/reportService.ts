@@ -1,6 +1,6 @@
 import { api, ApiError } from "@/services/api";
 import { authClient } from "@/lib/auth";
-import type { AnalysisResponse, ReportSummary, ReportResultsResponse } from "@/types/report";
+import type { AnalysisResponse, ReportSummary, ReportResultsResponse, TestTrend, TrendsResponse } from "@/types/report";
 
 /**
  * Report-specific calls, built on top of api.ts - components should
@@ -71,5 +71,20 @@ export const reportService = {
       newWindow.close();
       throw err;
     }
+  },
+
+  async updateTestDate(reportId: number, testDate: string | null): Promise<ReportSummary> {
+    const token = authClient.getToken();
+    return api.patch<ReportSummary>(`/reports/${reportId}`, { testDate }, token);
+  },
+
+  async getAllTrends(): Promise<TrendsResponse> {
+    const token = authClient.getToken();
+    return api.get<TrendsResponse>("/results/trends", token);
+  },
+
+  async getTrendForTest(canonicalName: string): Promise<TestTrend> {
+    const token = authClient.getToken();
+    return api.get<TestTrend>(`/results/trends/${canonicalName}`, token);
   },
 };

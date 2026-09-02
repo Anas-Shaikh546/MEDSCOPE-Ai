@@ -1,0 +1,1462 @@
+Absolutely. Since **Step 5 is now complete**, I would treat Step 6 as the point where MedScope stops being just a **single-report analyzer** and starts becoming a **useful longitudinal health-record system**.
+
+I also want Step 6 designed carefully because the decisions we make here will directly affect Steps 7 and 8.
+
+Current direction:
+
+```text
+Step 1  Foundation                    ✅
+Step 2  Auth + Ownership              ✅
+Step 3  Report Management             ✅
+Step 4  PDF Extraction                ✅
+Step 5  AI Interpretation             ✅
+Step 6  Longitudinal Health Insights  🚀
+Step 7  Advanced Intelligence         ⏭️
+Step 8  Final Product / Hardening      ⏭️
+```
+
+A longitudinal approach is also a sensible direction: current health-record tooling increasingly focuses on making multiple records easier to access, combine, and understand, while structured standards such as FHIR are increasingly used for interoperability. ([NCBI][1])
+
+# STEP 6 — Longitudinal Health Insights
+
+## 🎯 Main goal
+
+Step 5 answers:
+
+> **"What does this report mean?"**
+
+Step 6 should answer:
+
+> **"What does this report mean in the context of my previous reports?"**
+
+For example:
+
+```text
+Report 1 — Jan
+Hemoglobin: 13.2
+
+Report 2 — Apr
+Hemoglobin: 13.5
+
+Report 3 — Aug
+Hemoglobin: 13.8
+```
+
+Step 6 can recognize:
+
+```text
+Hemoglobin
+13.2 → 13.5 → 13.8
+
+Trend: gradually increasing
+```
+
+The important distinction:
+
+```text
+Step 5
+ONE report → interpretation
+
+Step 6
+MULTIPLE reports → comparison + trends
+```
+
+---
+
+# 6.1 Do NOT redesign Step 4 or Step 5
+
+This is extremely important.
+
+We already have:
+
+```text
+com.medscope.analysis
+        ↓
+extracted facts
+
+com.medscope.interpretation
+        ↓
+AI interpretation
+```
+
+Keep both frozen.
+
+Step 6 should consume them.
+
+```text
+ReportResult
+      ↓
+Analysis
+      ↓
+Step 6
+```
+
+**Don't move existing entities around just to accommodate Step 6.**
+
+---
+
+# 6.2 Introduce a medical timeline
+
+We need a concept of:
+
+> **When did this measurement actually occur?**
+
+Do not use only:
+
+```text
+createdAt
+```
+
+because:
+
+```text
+createdAt = when user uploaded report
+```
+
+is not necessarily:
+
+```text
+testDate = when laboratory test happened
+```
+
+These are different.
+
+For example:
+
+```text
+Test performed:
+20 August
+
+User uploads:
+31 August
+```
+
+We need to preserve both.
+
+### Important parameters
+
+```text
+report.createdAt
+report.documentDate / report.testDate
+```
+
+If the PDF provides a date, Step 4/6 should preserve the source date.
+
+If there is no reliable date:
+
+```text
+testDate = null
+```
+
+**Never invent a medical date.**
+
+---
+
+# 6.3 Normalize test identity
+
+This is probably the most important technical task in Step 6.
+
+Different reports can call the same test different things:
+
+```text
+Hemoglobin
+Hb
+HGB
+Haemoglobin
+```
+
+We need a canonical identity.
+
+For example:
+
+```text
+displayName:
+Hemoglobin
+
+normalizedName:
+hemoglobin
+```
+
+But don't rely only on lowercase strings.
+
+Eventually we want:
+
+```text
+TestDefinition
+```
+
+Conceptually:
+
+```text
+TestDefinition
+----------------
+id
+canonicalName
+code
+defaultUnit
+category
+```
+
+Then:
+
+```text
+"Hb"
+"HGB"
+"Hemoglobin"
+```
+
+can potentially map to:
+
+```text
+TestDefinition:
+Hemoglobin
+```
+
+This is what makes trend comparison reliable.
+
+---
+
+# 6.4 Units are critical
+
+Consider:
+
+```text
+Glucose
+90 mg/dL
+```
+
+and:
+
+```text
+Glucose
+5.0 mmol/L
+```
+
+Those aren't directly comparable numerically.
+
+Therefore Step 6 should distinguish:
+
+```text
+rawValue
+rawUnit
+normalizedValue
+normalizedUnit
+```
+
+Example:
+
+```text
+raw:
+5.0 mmol/L
+
+normalized:
+90.09 mg/dL
+```
+
+But **don't automatically normalize every medical unit blindly**.
+
+Only support conversions we explicitly define and test.
+
+If conversion isn't supported:
+
+```text
+comparisonStatus = UNSUPPORTED
+```
+
+rather than guessing.
+
+---
+
+# 6.5 Reference ranges must remain report-specific
+
+This rule from Step 5 continues.
+
+Suppose:
+
+```text
+Report A:
+Hemoglobin 13.8
+Range 13.0–17.0
+
+Report B:
+Hemoglobin 13.8
+Range 12.0–16.0
+```
+
+The value is the same, but the interpretation relative to the provided range differs.
+
+Therefore every historical result retains:
+
+```text
+value
+unit
+referenceLow
+referenceHigh
+status
+sourceReport
+```
+
+Never replace historical reference ranges with today's range.
+
+---
+
+# 6.6 Build the trend engine
+
+Once test identity and units are normalized:
+
+```text
+ReportResult
+      ↓
+Group by canonical test
+      ↓
+Sort chronologically
+      ↓
+Compare values
+      ↓
+Generate trend
+```
+
+Example:
+
+```text
+Hemoglobin
+
+Jan 10    13.1
+Mar 15    13.4
+Jun 21    13.7
+Aug 20    13.8
+```
+
+Result:
+
+```text
+Trend: INCREASING
+```
+
+Possible controlled values:
+
+```text
+INCREASING
+DECREASING
+STABLE
+FLUCTUATING
+INSUFFICIENT_DATA
+```
+
+---
+
+# 6.7 Don't call every change a trend
+
+This is a major bug-prevention measure.
+
+If:
+
+```text
+13.8
+13.7
+13.9
+```
+
+we shouldn't say:
+
+> "Your hemoglobin is increasing."
+
+We need a minimum number of observations.
+
+For example:
+
+```text
+minimum observations = 3
+```
+
+And ideally a meaningful change threshold.
+
+The exact threshold should **not be hardcoded into the UI**.
+
+Keep it in the trend-analysis logic/configuration.
+
+---
+
+# 6.8 Trend ≠ diagnosis
+
+This is another hard boundary.
+
+The system can say:
+
+```text
+Hemoglobin has decreased across the last 4 measurements.
+```
+
+It should not automatically say:
+
+```text
+You have anemia.
+```
+
+Step 6 describes the **observed pattern**.
+
+Step 5 can explain individual results.
+
+Later AI layers may contextualize trends, but the system must distinguish:
+
+```text
+OBSERVATION
+```
+
+from:
+
+```text
+MEDICAL CONCLUSION
+```
+
+---
+
+# 6.9 Create a historical results API
+
+Something like:
+
+```http
+GET /api/trends
+```
+
+or preferably:
+
+```http
+GET /api/results/trends
+```
+
+And:
+
+```http
+GET /api/results/trends/{testId}
+```
+
+The response could look conceptually like:
+
+```json
+{
+  "test": "Hemoglobin",
+  "unit": "g/dL",
+  "trend": "INCREASING",
+  "observations": [
+    {
+      "date": "2026-01-10",
+      "value": 13.1,
+      "status": "NORMAL"
+    },
+    {
+      "date": "2026-03-15",
+      "value": 13.4,
+      "status": "NORMAL"
+    },
+    {
+      "date": "2026-08-20",
+      "value": 13.8,
+      "status": "NORMAL"
+    }
+  ]
+}
+```
+
+---
+
+# 6.10 Frontend — health timeline
+
+The dashboard should evolve from:
+
+```text
+My Reports
+```
+
+into something more useful:
+
+```text
+My Health
+│
+├── Recent Reports
+├── Important Results
+├── Trends
+└── AI Insights
+```
+
+For example:
+
+```text
+Hemoglobin
+
+13.8 ─────────●
+13.5 ─────●
+13.2 ──●
+      Jan  Mar  Aug
+```
+
+A chart is useful here because the user can visually understand change over time.
+
+---
+
+# 6.11 Filter system
+
+The user should eventually be able to select:
+
+```text
+Test:
+[ Hemoglobin ▼ ]
+
+Time:
+[ 6 months ▼ ]
+```
+
+Possible ranges:
+
+```text
+3 months
+6 months
+1 year
+All time
+```
+
+But don't build every possible filter yet.
+
+Start with:
+
+```text
+test + date range
+```
+
+---
+
+# 6.12 Abnormal history
+
+Step 6 should also make it possible to see:
+
+```text
+Previously abnormal
+Currently normal
+```
+
+or:
+
+```text
+Previously normal
+Currently abnormal
+```
+
+Example:
+
+```text
+HbA1c
+
+Jan → NORMAL
+Apr → HIGH
+Aug → HIGH
+```
+
+This is more useful than simply looking at each report individually.
+
+But again:
+
+```text
+HIGH
+```
+
+comes from the report/reference range.
+
+We don't invent it.
+
+---
+
+# 6.13 AI should NOT be the trend engine initially
+
+This is important.
+
+Don't do:
+
+```text
+All historical results
+       ↓
+Claude
+       ↓
+"find trends"
+```
+
+Instead:
+
+```text
+Database
+ ↓
+Deterministic trend engine
+ ↓
+Trend facts
+ ↓
+AI
+ ↓
+Human explanation
+```
+
+For example:
+
+```text
+Deterministic:
+
+Hemoglobin
+13.1 → 13.4 → 13.8
+Trend = INCREASING
+```
+
+Then AI can explain:
+
+> "Your hemoglobin has gradually increased across the available measurements."
+
+This dramatically reduces hallucination risk.
+
+---
+
+# 6.14 Step 6 database additions
+
+I would introduce a canonical test-definition layer.
+
+Conceptually:
+
+```text
+test_definitions
+----------------
+id
+canonical_name
+code
+category
+default_unit
+created_at
+```
+
+Then results can eventually reference:
+
+```text
+report_results
+      │
+      └── test_definition_id
+```
+
+However:
+
+### ⚠️ Don't break existing Step 4 data
+
+Migration should be incremental.
+
+Existing:
+
+```text
+testName
+normalizedTestName
+```
+
+can remain.
+
+We can gradually populate:
+
+```text
+test_definition_id
+```
+
+and only make it mandatory after existing records have been mapped.
+
+---
+
+# 6.15 Categories
+
+We should also start categorizing tests:
+
+```text
+CBC
+LIVER
+KIDNEY
+THYROID
+LIPID
+GLUCOSE
+VITAMINS
+URINE
+OTHER
+```
+
+This will help later with:
+
+```text
+dashboard grouping
+trend filtering
+AI summaries
+report comparison
+```
+
+But don't create hundreds of categories.
+
+Start with a controlled set.
+
+---
+
+# 6.16 Source traceability
+
+Every historical value must still be traceable:
+
+```text
+Trend point
+    ↓
+ReportResult
+    ↓
+Report
+    ↓
+Original PDF
+```
+
+The user should eventually be able to click a trend point and say:
+
+> "Where did this number come from?"
+
+and get:
+
+```text
+Report:
+Blood_Test_August.pdf
+
+Page:
+2
+
+Extracted value:
+13.8 g/dL
+```
+
+This is an excellent trust feature.
+
+---
+
+# 6.17 Ownership
+
+This remains mandatory.
+
+For:
+
+```http
+GET /api/results/trends
+```
+
+the server determines:
+
+```text
+authenticatedUserId
+```
+
+then:
+
+```text
+user → reports → results
+```
+
+Never:
+
+```http
+GET /api/results/trends?userId=17
+```
+
+The user ID comes from authentication.
+
+---
+
+# 6.18 Caching
+
+Don't introduce Redis yet.
+
+If trend calculation becomes expensive:
+
+```text
+DB
+ ↓
+TrendService
+```
+
+can be optimized first.
+
+Only introduce Redis when there is an actual measured performance problem.
+
+This keeps our architecture boring.
+
+---
+
+# 6.19 Performance
+
+Historical queries need indexes.
+
+Likely useful indexes include:
+
+```text
+reports(user_id)
+report_results(report_id)
+report_results(test_definition_id)
+reports(test_date)
+```
+
+Potentially composite indexes once query patterns are known.
+
+Don't blindly index every column.
+
+---
+
+# 6.20 Data integrity
+
+We need constraints ensuring:
+
+```text
+result → report
+report → user
+analysis → report
+```
+
+cannot become orphaned.
+
+And when a report is deleted:
+
+```text
+Report
+ ├── ReportResults
+ ├── Analysis
+ └── AnalysisFindings
+```
+
+must be handled consistently.
+
+You already fixed cascade deletion in Step 4, so **Step 6 must preserve that behavior**.
+
+---
+
+# 6.21 Testing
+
+Step 6 needs much stronger test coverage than a simple CRUD feature.
+
+### Test 1 — One result
+
+```text
+Hemoglobin = 13.8
+```
+
+Expected:
+
+```text
+INSUFFICIENT_DATA
+```
+
+because there isn't a trend.
+
+### Test 2 — Three increasing values
+
+```text
+13.1
+13.4
+13.8
+```
+
+Expected:
+
+```text
+INCREASING
+```
+
+### Test 3 — Decreasing
+
+```text
+14.0
+13.7
+13.2
+```
+
+Expected:
+
+```text
+DECREASING
+```
+
+### Test 4 — Stable
+
+```text
+13.7
+13.8
+13.7
+```
+
+Expected:
+
+```text
+STABLE
+```
+
+### Test 5 — Mixed
+
+```text
+13.2
+14.0
+13.1
+14.1
+```
+
+Expected:
+
+```text
+FLUCTUATING
+```
+
+### Test 6 — Different units
+
+Verify unsupported conversion doesn't produce a fake comparison.
+
+### Test 7 — Different reference ranges
+
+Verify each result keeps its original range.
+
+### Test 8 — Different users
+
+User A cannot see User B's trend.
+
+### Test 9 — Deleted report
+
+Delete source report and verify historical data follows the defined deletion policy.
+
+### Test 10 — Missing date
+
+Don't invent chronology.
+
+---
+
+# Step 6 Definition of Done
+
+I would freeze Step 6 only when:
+
+```text
+☐ Historical test dates handled
+☐ Canonical test identity implemented
+☐ Test aliases handled
+☐ Unit normalization strategy implemented
+☐ Reference ranges preserved
+☐ Deterministic trend engine implemented
+☐ Minimum-observation rule implemented
+☐ Trend categories implemented
+☐ Historical results API implemented
+☐ Ownership enforced
+☐ Dashboard trends implemented
+☐ Test/result → source report traceability works
+☐ Abnormal history supported
+☐ Database indexes added where justified
+☐ Cascade behavior verified
+☐ Cross-user tests pass
+☐ Trend edge cases pass
+☐ No AI used for basic mathematical trend calculation
+```
+
+---
+
+# 🚨 Now the important part: Measures for Step 7
+
+Step 7 should be able to build **on top of Step 6**, not rewrite it.
+
+So while implementing Step 6, protect these boundaries.
+
+## Measure 1 — Keep deterministic facts separate from AI
+
+```text
+Step 4
+FACTS
+
+Step 5
+SINGLE-REPORT INTERPRETATION
+
+Step 6
+DETERMINISTIC HISTORY/TRENDS
+
+Step 7
+ADVANCED AI
+```
+
+Don't let Step 7 become the place where we calculate basic trends.
+
+---
+
+## Measure 2 — Preserve historical snapshots
+
+Never overwrite:
+
+```text
+old result
+```
+
+with:
+
+```text
+new result
+```
+
+Every observation is historical data.
+
+```text
+Jan → 13.2
+Apr → 13.5
+Aug → 13.8
+```
+
+must remain three observations.
+
+---
+
+## Measure 3 — Don't overwrite AI analyses
+
+Suppose Step 5 generated:
+
+```text
+Analysis v1
+```
+
+Step 7 may generate a richer interpretation.
+
+Don't overwrite the old analysis blindly.
+
+Keep versioning:
+
+```text
+Analysis
+├── model
+├── modelVersion
+├── promptVersion
+└── createdAt
+```
+
+This becomes very important for reproducibility.
+
+---
+
+## Measure 4 — Prepare for multiple report types
+
+Don't make Step 6 assume every document is:
+
+```text
+CBC
+```
+
+Eventually we may have:
+
+```text
+CBC
+Lipid profile
+Thyroid
+Liver function
+Kidney function
+Vitamin
+Urine
+Discharge summary
+Prescription
+```
+
+So use:
+
+```text
+reportType
+```
+
+where appropriate.
+
+But **don't implement every type now**.
+
+---
+
+## Measure 5 — Keep test definitions extensible
+
+Don't hardcode:
+
+```java
+if (testName.equals("Hemoglobin"))
+```
+
+everywhere.
+
+Use:
+
+```text
+TestDefinition
+```
+
+so future tests can be added without rewriting business logic.
+
+---
+
+## Measure 6 — Units must be explicit
+
+Never compare:
+
+```text
+5
+```
+
+with:
+
+```text
+5
+```
+
+without knowing:
+
+```text
+5 what?
+```
+
+Always carry:
+
+```text
+value + unit
+```
+
+through the system.
+
+---
+
+## Measure 7 — Don't infer missing information
+
+If:
+
+```text
+testDate = null
+```
+
+then:
+
+```text
+unknown
+```
+
+If:
+
+```text
+referenceRange = null
+```
+
+then:
+
+```text
+unknown
+```
+
+If:
+
+```text
+unit = null
+```
+
+don't compare values.
+
+This will protect Step 7's AI from garbage inputs.
+
+---
+
+## Measure 8 — Keep source provenance
+
+Every important derived object should be traceable:
+
+```text
+Step 7 insight
+    ↓
+Step 6 trend
+    ↓
+ReportResult
+    ↓
+Report
+    ↓
+PDF
+```
+
+This will be extremely useful if the user asks:
+
+> "Why did MedScope tell me this?"
+
+---
+
+## Measure 9 — Don't introduce RAG yet
+
+Even though Step 7 may eventually benefit from medical knowledge retrieval:
+
+```text
+❌ Don't add vector DB now
+❌ Don't add embeddings now
+❌ Don't add a knowledge base now
+```
+
+First establish clean structured data.
+
+Then we'll decide whether Step 7 actually needs RAG.
+
+---
+
+## Measure 10 — Keep AI provider abstract
+
+You currently use:
+
+```text
+Anthropic
+```
+
+Don't make the entire application depend directly on Anthropic classes.
+
+Use your own interface conceptually:
+
+```text
+AIInterpretationClient
+```
+
+with:
+
+```text
+AnthropicAIClient
+```
+
+behind it.
+
+Then later:
+
+```text
+Anthropic
+Gemini
+OpenAI
+local model
+```
+
+can be swapped without rewriting `AnalysisService`.
+
+---
+
+# The Step 6 → Step 7 contract
+
+This is what I want us to achieve:
+
+```text
+                         STEP 6
+                           │
+             ┌─────────────┴──────────────┐
+             │                            │
+        Historical Data              Trend Facts
+             │                            │
+             └─────────────┬──────────────┘
+                           ▼
+                         STEP 7
+                    Advanced AI
+                           │
+              ┌────────────┼────────────┐
+              ▼            ▼            ▼
+          Contextual    Risk-aware    Personalized
+          explanation   insights      questions
+```
+
+The key is:
+
+> **Step 7 should consume trustworthy structured history instead of trying to rediscover facts from PDFs.**
+
+That is also consistent with the broader direction of modern health-record systems: structured data and longitudinal access make downstream interpretation and interoperability much more useful. Google's 2026 Medical Data Toolkit work, for example, explicitly emphasizes extracting lab observations and structuring them for interoperable health records. ([Google Blog][2])
+
+---
+
+# 🔒 Step 6 scope I recommend locking
+
+```text
+STEP 6
+══════════════════════════════════════════
+
+1. Historical medical timeline
+2. Test normalization
+3. Canonical test definitions
+4. Unit handling
+5. Reference-range preservation
+6. Deterministic trend engine
+7. Abnormal-result history
+8. Historical results APIs
+9. Trend visualization
+10. Source traceability
+11. Ownership/security
+12. Performance/indexing
+13. Comprehensive tests
+```
+
+**No OCR. No RAG. No chatbot. No new AI model. No Redis. No Kafka.**
+
+Then Step 7 can be the genuinely **advanced intelligence** layer rather than another giant mixed feature.
+
+### The architectural progression is now very clean:
+
+```text
+PDF
+ ↓
+STEP 4 — What does the report SAY?
+ ↓
+Structured facts
+ ↓
+STEP 5 — What does this report MEAN?
+ ↓
+Interpretation
+ ↓
+STEP 6 — What has CHANGED OVER TIME?
+ ↓
+Trends + history
+ ↓
+STEP 7 — What INSIGHTS can we derive from the whole picture?
+ ↓
+Advanced intelligence
+ ↓
+STEP 8 — Product hardening / final platform
+```
+
+That's the direction I'd lock before you start writing Step 6 code.
+
+[1]: https://www.ncbi.nlm.nih.gov/books/NBK616185/?utm_source=chatgpt.com "Individuals’ Access and Use of Patient Portals and Smartphone Health Apps, 2024 - ASTP Health IT Data Brief - NCBI Bookshelf"
+[2]: https://blog.google/intl/en-in/company-news/india-aarogya-setu-gemma-medical-data-toolkit/?utm_source=chatgpt.com "Bringing AI to India’s digital health infrastructure"
+Yes — **confirm all five**, with one small clarification on #2.
+
+### 🔒 Step 6 decisions — LOCKED
+
+1. **Package:** `com.medscope.timeline` ✅
+   Clean separation:
+
+   ```text
+   analysis       → extracted facts
+   interpretation → AI interpretation
+   timeline       → historical/trend logic
+   ```
+
+2. **TestDefinition ↔ ReportResult:** **no FK/column added to `report_results`** ✅
+   Use the existing `normalizedTestName` vocabulary and join against `test_definitions.canonical_name` at the timeline/query layer.
+
+   This keeps Step 4 genuinely frozen.
+
+3. **`test_date`:** nullable column on `reports` ✅
+
+   * No automatic date extraction in Step 6.
+   * `null` when unknown.
+   * Trend ordering falls back to `createdAt`.
+   * API/UI must distinguish **confirmed test date** from **upload date**.
+
+4. **Unit conversion:** shape now, conversions later ✅
+
+   ```text
+   rawValue
+   rawUnit
+   normalizedValue
+   normalizedUnit
+   ```
+
+   But initially:
+
+   ```text
+   different unit → UNSUPPORTED
+   ```
+
+   **No guessed medical conversion formulas.**
+
+5. **AI abstraction:** yes, implement it now ✅
+   Since you're using OpenRouter, don't couple the application to Anthropic/OpenRouter.
+
+   Use something like:
+
+   ```text
+   AiServiceClient
+        ↓
+   OpenRouterAiServiceClient
+   ```
+
+   Later we can swap:
+
+   ```text
+   OpenRouter
+   Claude
+   Gemini
+   OpenAI
+   local model
+   ```
+
+   without rewriting the business layer.
+
+### One additional rule
+
+For #2, **don't silently assume every `normalizedTestName` is clinically equivalent forever**. The existing controlled vocabulary is our Step 4 contract, so Step 6 can use it as the canonical bridge **for now**. If we later discover aliases that need richer mapping, we extend `TestDefinition` rather than modifying `ReportResult`.
+
+So the final boundary is:
+
+```text
+STEP 4 — FROZEN
+ReportResult
+normalizedTestName
+        │
+        │ query-time mapping
+        ▼
+STEP 6
+TestDefinition
+        │
+        ▼
+Trend Engine
+        │
+        ▼
+Historical API
+```
+
+**All five decisions are approved. Proceed with the Step 6 task breakdown.**
+    **Confirmed — keep the `PATCH /api/reports/{reportId}` addition.** ✅
+
+It is necessary for `test_date` to have actual value in Step 6 rather than being a permanently unused field.
+
+The **6-task breakdown is approved as-is**:
+
+1. `TestDefinition` + `test_date` + PATCH endpoint
+2. Pure deterministic `TrendCalculator`
+3. Timeline repository + service
+4. Trend APIs + tests
+5. `AiServiceClient` abstraction → OpenRouter implementation
+6. Frontend health timeline
+
+### 🔒 Step 6 is now fully locked
+
+One additional constraint for Task 1:
+
+> `PATCH /api/reports/{reportId}` may **only modify `testDate`**.
+
+It must enforce:
+
+```text
+authenticated user
+        ↓
+owns report?
+   ↓           ↓
+  YES          NO
+   ↓            ↓
+update date   404/403
+```
+
+And allow:
+
+```text
+testDate = valid date
+```
+
+or explicitly:
+
+```text
+testDate = null
+```
+
+to remove a manually entered date.
+
+**No report PDF, filename, status, extracted results, or ownership fields may be modified through this endpoint.**
+
+Everything else in the proposed Task 1–6 plan is approved. **Start Task 1.**
+All five locked, including the clarification — good call anchoring Step 6 to `normalizedTestName` as the bridge rather than letting it silently assume permanent clinical equivalence.
+
+One gap I want to flag before proposing tasks: **nothing in this plan ever sets `test_date`.** You locked it as a nullable column with no auto-extraction (correct, real date-extraction is its own project) — but with no endpoint to set it either, the column stays `null` forever and the whole "confirmed test date vs upload date" distinction in the UI never actually has anything to display except "upload date" always. I'd add a minimal `PATCH /api/reports/{reportId}` letting the owner manually set `testDate` (nothing else editable) — small, but it's what makes the column mean anything in this version.
+
+Task breakdown, 6 tasks:
+
+| Task | Deliverable |
+|---|---|
+| 1 | `test_definitions` migration (seeded with your existing ~45 canonical names + category) + `reports.test_date` column + `PATCH /reports/{id}` to set it + entities |
+| 2 | Deterministic `TrendCalculator` (INCREASING/DECREASING/STABLE/FLUCTUATING/INSUFFICIENT_DATA, min-3-observations rule, unit-mismatch→UNSUPPORTED) — pure logic, no DB, heavily unit-tested against your 10 listed scenarios |
+| 3 | Read-only `timeline`-package repository (new interface over the existing `ReportResult`/`Report` entities — zero edits to `analysis`/`report` packages) + `TimelineService` orchestration (ownership, ordering by `test_date` falling back to `createdAt`, source traceability) |
+| 4 | `GET /api/results/trends` + `GET /api/results/trends/{canonicalName}` + DTOs + ownership/edge-case tests |
+| 5 | AI-provider abstraction (Measure 10) — `AiServiceClient` becomes an interface, current implementation becomes `OpenRouterAiServiceClient`; purely structural, existing Step 5 tests should pass unchanged |
+| 6 | Frontend: health timeline view — test list with trend badges, a simple dependency-free inline chart per test, test+date-range filter |
+
+Confirm the `test_date` addition (or tell me to drop it and leave the column permanently null for now), and I'll start Task 1.

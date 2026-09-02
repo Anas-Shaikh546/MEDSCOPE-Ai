@@ -9,6 +9,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.time.LocalDate;
 import java.util.List;
 
 /**
@@ -91,5 +92,17 @@ public class ReportService {
         fileStorageService.delete(report.getFilePath());
         reportRepository.delete(report);
         log.info("Report deleted: reportId={}, userId={}", reportId, userId);
+    }
+
+    /**
+     * The only field modifiable after upload. testDate may be set to
+     * a real date (confirmed lab date) or explicitly null (to clear a
+     * previously entered value). Nothing else on the report is touched -
+     * this method cannot change filename, status, ownership, or results.
+     */
+    public Report updateTestDate(Long reportId, Long userId, LocalDate testDate) {
+        Report report = getOwnedByUserOrThrow(reportId, userId);
+        report.setTestDate(testDate);
+        return reportRepository.save(report);
     }
 }

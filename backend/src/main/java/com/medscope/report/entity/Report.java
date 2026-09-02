@@ -8,6 +8,7 @@ import lombok.NoArgsConstructor;
 import lombok.Setter;
 
 import java.time.Instant;
+import java.time.LocalDate;
 
 /**
  * Metadata only. The actual PDF bytes live on disk under
@@ -64,6 +65,16 @@ public class Report {
 
     @Column(name = "updated_at", nullable = false)
     private Instant updatedAt;
+
+    // Step 6 addition. Nullable and unset by any current flow - no
+    // automatic date extraction yet (locked decision). Never confuse
+    // this with createdAt: createdAt is when the user uploaded the
+    // file, testDate is when the lab test actually happened (6.2).
+    // The timeline package's ordering falls back to createdAt when
+    // this is null, and must label results accordingly rather than
+    // implying a confirmed test date exists.
+    @Column(name = "test_date")
+    private LocalDate testDate;
 
     @PrePersist
     protected void onCreate() {

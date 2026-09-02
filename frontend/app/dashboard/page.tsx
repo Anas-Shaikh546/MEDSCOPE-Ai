@@ -231,6 +231,9 @@ export default function DashboardPage() {
       <hr style={{ margin: "24px 0" }} />
 
       <h2>Your Reports</h2>
+      <a href="/health" style={{ fontSize: 14, display: "inline-block", marginBottom: 12 }}>
+        📈 View Health Trends
+      </a>
 
       {loadingReports && <p>Loading reports...</p>}
 

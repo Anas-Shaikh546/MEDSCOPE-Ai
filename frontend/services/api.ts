@@ -61,6 +61,9 @@ export const api = {
   delete: <T>(path: string, authToken?: string | null) =>
     request<T>(path, { method: "DELETE", authToken }),
 
+  patch: <T>(path: string, body: unknown, authToken?: string | null) =>
+    request<T>(path, { method: "PATCH", body: JSON.stringify(body), authToken }),
+
   /**
    * Multipart upload - bypasses the JSON Content-Type header that
    * request() sets by default, so the browser can set its own

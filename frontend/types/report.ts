@@ -5,6 +5,7 @@ export interface ReportSummary {
   fileSize: number;
   status: string;
   createdAt: string;
+  testDate: string | null;
 }
 
 export interface ReportResult {
@@ -40,4 +41,38 @@ export interface AnalysisResponse {
   promptVersion: string | null;
   createdAt: string;
   findings: AnalysisFinding[];
+}
+
+// Step 6 — timeline types
+export type TrendDirection =
+  | "INCREASING"
+  | "DECREASING"
+  | "STABLE"
+  | "FLUCTUATING"
+  | "INSUFFICIENT_DATA"
+  | "UNSUPPORTED";
+
+export interface TimelineObservation {
+  date: string;
+  dateIsConfirmed: boolean;
+  reportId: number;
+  reportResultId: number;
+  value: number;
+  unit: string;
+  referenceLow: number | null;
+  referenceHigh: number | null;
+  status: string;
+}
+
+export interface TestTrend {
+  canonicalName: string;
+  displayName: string;
+  category: string;
+  defaultUnit: string | null;
+  trend: TrendDirection;
+  observations: TimelineObservation[];
+}
+
+export interface TrendsResponse {
+  trends: TestTrend[];
 }
