@@ -4,11 +4,14 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { authClient } from "@/lib/auth";
 import { reportService } from "@/services/reportService";
+import { intelligenceService } from "@/services/intelligenceService";
 import { ApiError } from "@/services/api";
 import type { UserProfile } from "@/types/auth";
 import type { AnalysisResponse, ReportSummary, ReportResult } from "@/types/report";
+import type { InsightGenerationSummary } from "@/types/intelligence";
+import IntelligencePanel from "@/components/IntelligencePanel";
 
-const MAX_CLIENT_SIDE_SIZE_BYTES = 10 * 1024 * 1024; // 10 MB - UX only, backend is the real boundary
+const MAX_CLIENT_SIDE_SIZE_BYTES = 10 * 1024 * 1024;
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -16,14 +19,21 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-// Plain status label only - no interpretation of what NORMAL/HIGH/LOW
-// means for the patient (that's explicitly Step 5 territory, not this).
 function resultStatusLabel(status: string): string {
   switch (status) {
     case "NORMAL": return "Normal";
     case "HIGH": return "High";
     case "LOW": return "Low";
     default: return "Unknown";
+  }
+}
+
+function resultStatusColor(status: string): string {
+  switch (status) {
+    case "NORMAL": return "#10b981";
+    case "HIGH": return "#ef4444";
+    case "LOW": return "#f59e0b";
+    default: return "#6b7280";
   }
 }
 
@@ -39,11 +49,11 @@ function severityLabel(severity: string): string {
 
 function severityColor(severity: string): string {
   switch (severity) {
-    case "NORMAL": return "#176b3a";
-    case "ATTENTION": return "#a15c00";
-    case "CONCERN": return "#b23a00";
-    case "URGENT": return "crimson";
-    default: return "#555";
+    case "NORMAL": return "#10b981";
+    case "ATTENTION": return "#f59e0b";
+    case "CONCERN": return "#f97316";
+    case "URGENT": return "#ef4444";
+    default: return "#6b7280";
   }
 }
 
@@ -59,8 +69,11 @@ export default function DashboardPage() {
   const [analyzingId, setAnalyzingId] = useState<number | null>(null);
   const [expandedResultsId, setExpandedResultsId] = useState<number | null>(null);
   const [expandedAnalysisId, setExpandedAnalysisId] = useState<number | null>(null);
+  const [expandedIntelligenceId, setExpandedIntelligenceId] = useState<number | null>(null);
   const [resultsByReport, setResultsByReport] = useState<Record<number, ReportResult[]>>({});
   const [analysisByReport, setAnalysisByReport] = useState<Record<number, AnalysisResponse>>({});
+  const [insightsByReport, setInsightsByReport] = useState<Record<number, InsightGenerationSummary>>({});
+  const [generatingIntelligenceId, setGeneratingIntelligenceId] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const loadReports = useCallback(async () => {
@@ -99,14 +112,11 @@ export default function DashboardPage() {
 
   async function handleFileChosen(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
-    e.target.value = ""; // allow re-selecting the same file later
+    e.target.value = "";
     if (!file) return;
 
     setError(null);
 
-    // UX-only checks - the backend performs the real validation
-    // (extension, MIME type, PDF signature, size) and is the actual
-    // security boundary.
     if (!file.name.toLowerCase().endsWith(".pdf")) {
       setError("Only PDF files are allowed");
       return;
@@ -218,171 +228,101 @@ export default function DashboardPage() {
     setExpandedAnalysisId(reportId);
   }
 
+  async function handleGenerateIntelligence(reportId: number) {
+    setError(null);
+    setGeneratingIntelligenceId(reportId);
+    try {
+      const insights = await intelligenceService.generate(reportId);
+      setInsightsByReport((prev) => ({ ...prev, [reportId]: insights }));
+      setExpandedIntelligenceId(reportId);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Intelligence generation failed");
+    } finally {
+      setGeneratingIntelligenceId(null);
+    }
+  }
+
+  async function handleToggleIntelligence(reportId: number) {
+    setError(null);
+    if (expandedIntelligenceId === reportId) {
+      setExpandedIntelligenceId(null);
+      return;
+    }
+
+    if (!insightsByReport[reportId]) {
+      try {
+        const insights = await intelligenceService.getForReport(reportId);
+        setInsightsByReport((prev) => ({ ...prev, [reportId]: insights }));
+      } catch (err) {
+        if (err instanceof ApiError && err.status === 404) {
+          setInsightsByReport((prev) => ({ ...prev, [reportId]: null }));
+        } else {
+          setError(err instanceof ApiError ? err.message : "Failed to load insights");
+          return;
+        }
+      }
+    }
+
+    setExpandedIntelligenceId(reportId);
+  }
+
   if (!user) {
-    return <main style={{ maxWidth: 600, margin: "80px auto" }}>Loading...</main>;
+    return (
+      <main style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center" }}>
+        <div className="glass-card" style={{ padding: "40px" }}>
+          <div style={{ fontSize: "14px", color: "rgba(255,255,255,0.9)" }}>Loading...</div>
+        </div>
+      </main>
+    );
   }
 
   return (
-    <main style={{ maxWidth: 600, margin: "80px auto" }}>
-      <h1>Welcome, {user.firstName}</h1>
-      <p>Email: {user.email}</p>
-      <p>Account created: {new Date(user.createdAt).toLocaleDateString()}</p>
+    <main style={{ minHeight: "100vh", padding: "40px 20px" }}>
+      <div style={{ maxWidth: "900px", margin: "0 auto" }}>
+        {/* Header */}
+        <div className="glass-card fade-in" style={{ padding: "32px", marginBottom: "32px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "20px" }}>
+            <div>
+              <h1 style={{ fontSize: "32px", fontWeight: "700", margin: "0 0 8px 0", textShadow: "0 2px 10px rgba(0,0,0,0.1)" }}>
+                Welcome, {user.firstName}
+              </h1>
+              <p style={{ fontSize: "14px", color: "rgba(255,255,255,0.8)", margin: 0 }}>
+                {user.email}
+              </p>
+            </div>
+            <button onClick={handleLogout} className="btn-secondary">
+              Logout
+            </button>
+          </div>
+        </div>
 
-      <hr style={{ margin: "24px 0" }} />
+        {/* Quick Actions */}
+        <div style={{ display: "flex", gap: "16px", marginBottom: "32px", flexWrap: "wrap" }}>
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            disabled={uploading}
+            className="btn-primary"
+            style={{ flex: 1, minWidth: "200px" }}
+          >
+            {uploading ? "⏳ Uploading..." : "📄 Upload Report"}
+          </button>
+          <a
+            href="/health"
+            className="btn-secondary"
+            style={{
+              flex: 1,
+              minWidth: "200px",
+              textDecoration: "none",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              padding: "12px 24px"
+            }}
+          >
+            📈 View Health Trends
+          </a>
+        </div>
 
-      <h2>Your Reports</h2>
-      <a href="/health" style={{ fontSize: 14, display: "inline-block", marginBottom: 12 }}>
-        📈 View Health Trends
-      </a>
-
-      {loadingReports && <p>Loading reports...</p>}
-
-      {!loadingReports && reports.length === 0 && (
-        <p>No reports yet. Upload your first medical report.</p>
-      )}
-
-      {!loadingReports && reports.length > 0 && (
-        <ul style={{ listStyle: "none", padding: 0 }}>
-          {reports.map((report) => (
-            <li
-              key={report.id}
-              style={{
-                border: "1px solid #ddd",
-                borderRadius: 6,
-                padding: 12,
-                marginBottom: 8,
-              }}
-            >
-              <div style={{ fontWeight: 600 }}>{report.originalFilename}</div>
-              <div style={{ fontSize: 13, color: "#666" }}>
-                Uploaded: {new Date(report.createdAt).toLocaleString()} · {formatBytes(report.fileSize)} · Status: {report.status}
-              </div>
-
-              {report.status === "UNSUPPORTED" && (
-                <div style={{ fontSize: 13, color: "#a15c00", marginTop: 4 }}>
-                  This file couldn&apos;t be processed automatically (e.g. a scanned image with no selectable text).
-                </div>
-              )}
-              {report.status === "FAILED" && (
-                <div style={{ fontSize: 13, color: "crimson", marginTop: 4 }}>
-                  Processing failed. You can try again.
-                </div>
-              )}
-
-              <div style={{ marginTop: 8, display: "flex", gap: 8, flexWrap: "wrap" }}>
-                <button onClick={() => handleView(report.id)}>View</button>
-
-                {(report.status === "UPLOADED" || report.status === "FAILED") && (
-                  <button onClick={() => handleProcess(report.id)} disabled={processingId === report.id}>
-                    {processingId === report.id ? "Processing..." : "Process"}
-                  </button>
-                )}
-
-                {report.status === "PROCESSED" && (
-                  <>
-                    <button onClick={() => handleToggleResults(report.id)}>
-                      {expandedResultsId === report.id ? "Hide Results" : "View Results"}
-                    </button>
-                    <button onClick={() => handleAnalyze(report.id)} disabled={analyzingId === report.id}>
-                      {analyzingId === report.id ? "Analyzing..." : "Analyze"}
-                    </button>
-                    <button onClick={() => handleToggleAnalysis(report.id)}>
-                      {expandedAnalysisId === report.id ? "Hide Analysis" : "View Analysis"}
-                    </button>
-                  </>
-                )}
-
-                <button onClick={() => handleDelete(report.id)}>Delete</button>
-              </div>
-
-              {expandedResultsId === report.id && resultsByReport[report.id] && (
-                <div style={{ marginTop: 12, borderTop: "1px solid #eee", paddingTop: 8 }}>
-                  {resultsByReport[report.id].length === 0 ? (
-                    <p style={{ fontSize: 13, color: "#666" }}>No test results were recognized in this report.</p>
-                  ) : (
-                    <table style={{ width: "100%", fontSize: 13, borderCollapse: "collapse" }}>
-                      <thead>
-                        <tr style={{ textAlign: "left", color: "#666" }}>
-                          <th style={{ padding: "4px 8px 4px 0" }}>Test</th>
-                          <th style={{ padding: "4px 8px" }}>Value</th>
-                          <th style={{ padding: "4px 8px" }}>Reference Range</th>
-                          <th style={{ padding: "4px 0" }}>Status</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {resultsByReport[report.id].map((result, idx) => (
-                          <tr key={idx} style={{ borderTop: "1px solid #f0f0f0" }}>
-                            <td style={{ padding: "6px 8px 6px 0" }}>{result.testName}</td>
-                            <td style={{ padding: "6px 8px" }}>
-                              {result.value !== null
-                                ? `${result.value}${result.unit ? " " + result.unit : ""}`
-                                : result.textValue}
-                            </td>
-                            <td style={{ padding: "6px 8px" }}>
-                              {result.referenceLow !== null && result.referenceHigh !== null
-                                ? `${result.referenceLow} - ${result.referenceHigh}`
-                                : "-"}
-                            </td>
-                            <td style={{ padding: "6px 0" }}>{resultStatusLabel(result.status)}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  )}
-                </div>
-              )}
-
-              {expandedAnalysisId === report.id && analysisByReport[report.id] && (
-                <section style={{ marginTop: 12, borderTop: "1px solid #eee", paddingTop: 8 }}>
-                  <h3 style={{ margin: "0 0 8px" }}>AI Analysis</h3>
-                  {analysisByReport[report.id].summary && (
-                    <p style={{ margin: "0 0 8px" }}>{analysisByReport[report.id].summary}</p>
-                  )}
-
-                  {analysisByReport[report.id].findings.length === 0 ? (
-                    <p style={{ fontSize: 13, color: "#666" }}>No individual findings were returned.</p>
-                  ) : (
-                    <ul style={{ paddingLeft: 20, margin: "8px 0" }}>
-                      {analysisByReport[report.id].findings.map((finding) => (
-                        <li key={finding.reportResultId} style={{ marginBottom: 6 }}>
-                          <span style={{ color: severityColor(finding.severity), fontWeight: 600 }}>
-                            {severityLabel(finding.severity)}:
-                          </span>{" "}
-                          {finding.interpretation}
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-
-                  {analysisByReport[report.id].recommendations && (
-                    <>
-                      <h4 style={{ margin: "12px 0 4px" }}>Recommendations</h4>
-                      <p style={{ whiteSpace: "pre-line", margin: 0 }}>
-                        {analysisByReport[report.id].recommendations}
-                      </p>
-                    </>
-                  )}
-
-                  <p style={{ fontSize: 12, color: "#666", marginTop: 12, marginBottom: 0 }}>
-                    AI-generated information is not a diagnosis. Discuss medical questions with a qualified clinician.
-                  </p>
-                  <p style={{ fontSize: 12, color: "#666", marginTop: 6, marginBottom: 0 }}>
-                    Model: {analysisByReport[report.id].modelName ?? "Not recorded"}
-                    {analysisByReport[report.id].modelVersion
-                      ? ` (${analysisByReport[report.id].modelVersion})`
-                      : ""}
-                    {analysisByReport[report.id].promptVersion
-                      ? ` · Prompt: ${analysisByReport[report.id].promptVersion}`
-                      : ""}
-                  </p>
-                </section>
-              )}
-            </li>
-          ))}
-        </ul>
-      )}
-
-      <div style={{ marginTop: 16 }}>
         <input
           ref={fileInputRef}
           type="file"
@@ -391,16 +331,221 @@ export default function DashboardPage() {
           disabled={uploading}
           style={{ display: "none" }}
         />
-        <button onClick={() => fileInputRef.current?.click()} disabled={uploading}>
-          {uploading ? "Uploading..." : "Upload Report"}
-        </button>
+
+        {error && (
+          <div className="glass-card fade-in" style={{ padding: "16px", marginBottom: "24px", background: "rgba(239, 68, 68, 0.2)", border: "1px solid rgba(239, 68, 68, 0.4)" }}>
+            <p style={{ color: "#fff", margin: 0, fontSize: "14px" }}>⚠️ {error}</p>
+          </div>
+        )}
+
+        {/* Reports Section */}
+        <div className="glass-card-light fade-in" style={{ padding: "32px" }}>
+          <h2 style={{ fontSize: "24px", fontWeight: "700", color: "#2d3748", marginBottom: "24px" }}>
+            Your Reports
+          </h2>
+
+          {loadingReports && (
+            <div style={{ textAlign: "center", padding: "40px" }}>
+              <div style={{ fontSize: "14px", color: "#718096" }}>Loading reports...</div>
+            </div>
+          )}
+
+          {!loadingReports && reports.length === 0 && (
+            <div style={{ textAlign: "center", padding: "60px 40px" }}>
+              <div style={{ fontSize: "48px", marginBottom: "16px" }}>📋</div>
+              <p style={{ fontSize: "15px", color: "#4a5568", fontWeight: "500" }}>No reports yet</p>
+              <p style={{ fontSize: "13px", color: "#718096", marginTop: "8px" }}>Upload your first medical report to get started</p>
+            </div>
+          )}
+
+          {!loadingReports && reports.length > 0 && (
+            <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+              {reports.map((report) => (
+                <div
+                  key={report.id}
+                  className="glass-card slide-in"
+                  style={{ padding: "24px", transition: "all 0.3s ease" }}
+                >
+                  <div style={{ marginBottom: "16px" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "start", marginBottom: "8px" }}>
+                      <h3 style={{ fontSize: "16px", fontWeight: "600", color: "#fff", margin: 0 }}>
+                        📄 {report.originalFilename}
+                      </h3>
+                      <span style={{
+                        background: report.status === "PROCESSED" ? "rgba(16, 185, 129, 0.2)" :
+                                   report.status === "FAILED" ? "rgba(239, 68, 68, 0.2)" :
+                                   "rgba(251, 191, 36, 0.2)",
+                        color: "#fff",
+                        padding: "4px 12px",
+                        borderRadius: "12px",
+                        fontSize: "12px",
+                        fontWeight: "600"
+                      }}>
+                        {report.status}
+                      </span>
+                    </div>
+                    <div style={{ fontSize: "13px", color: "rgba(255,255,255,0.7)" }}>
+                      {new Date(report.createdAt).toLocaleString()} · {formatBytes(report.fileSize)}
+                    </div>
+                  </div>
+
+                  {report.status === "UNSUPPORTED" && (
+                    <div style={{ fontSize: "13px", color: "rgba(251, 191, 36, 0.9)", marginBottom: "16px", padding: "12px", background: "rgba(251, 191, 36, 0.1)", borderRadius: "8px" }}>
+                      ⚠️ This file couldn't be processed automatically
+                    </div>
+                  )}
+                  {report.status === "FAILED" && (
+                    <div style={{ fontSize: "13px", color: "rgba(239, 68, 68, 0.9)", marginBottom: "16px", padding: "12px", background: "rgba(239, 68, 68, 0.1)", borderRadius: "8px" }}>
+                      ❌ Processing failed. You can try again.
+                    </div>
+                  )}
+
+                  <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                    <button onClick={() => handleView(report.id)} className="btn-secondary btn-small">
+                      👁️ View
+                    </button>
+
+                    {(report.status === "UPLOADED" || report.status === "FAILED") && (
+                      <button
+                        onClick={() => handleProcess(report.id)}
+                        disabled={processingId === report.id}
+                        className="btn-secondary btn-small"
+                      >
+                        {processingId === report.id ? "⏳ Processing..." : "⚙️ Process"}
+                      </button>
+                    )}
+
+                    {report.status === "PROCESSED" && (
+                      <>
+                        <button onClick={() => handleToggleResults(report.id)} className="btn-secondary btn-small">
+                          {expandedResultsId === report.id ? "📊 Hide Results" : "📊 View Results"}
+                        </button>
+                        <button
+                          onClick={() => handleAnalyze(report.id)}
+                          disabled={analyzingId === report.id}
+                          className="btn-secondary btn-small"
+                        >
+                          {analyzingId === report.id ? "⏳ Analyzing..." : "🧪 Analyze"}
+                        </button>
+                        <button onClick={() => handleToggleAnalysis(report.id)} className="btn-secondary btn-small">
+                          {expandedAnalysisId === report.id ? "📋 Hide Analysis" : "📋 View Analysis"}
+                        </button>
+                        <button onClick={() => handleToggleIntelligence(report.id)} className="btn-secondary btn-small">
+                          {expandedIntelligenceId === report.id ? "🧠 Hide Insights" : "🧠 View Insights"}
+                        </button>
+                      </>
+                    )}
+
+                    <button onClick={() => handleDelete(report.id)} className="btn-secondary btn-small" style={{ marginLeft: "auto" }}>
+                      🗑️ Delete
+                    </button>
+                  </div>
+
+                  {/* Results Section */}
+                  {expandedResultsId === report.id && resultsByReport[report.id] && (
+                    <div style={{ marginTop: "24px", padding: "20px", background: "rgba(255,255,255,0.05)", borderRadius: "12px" }}>
+                      {resultsByReport[report.id].length === 0 ? (
+                        <p style={{ fontSize: "13px", color: "rgba(255,255,255,0.7)" }}>No test results were recognized</p>
+                      ) : (
+                        <div style={{ overflowX: "auto" }}>
+                          <table style={{ width: "100%", fontSize: "13px", borderCollapse: "collapse" }}>
+                            <thead>
+                              <tr style={{ borderBottom: "1px solid rgba(255,255,255,0.1)" }}>
+                                <th style={{ padding: "12px 8px 12px 0", textAlign: "left", color: "rgba(255,255,255,0.9)", fontWeight: "600" }}>Test</th>
+                                <th style={{ padding: "12px 8px", textAlign: "left", color: "rgba(255,255,255,0.9)", fontWeight: "600" }}>Value</th>
+                                <th style={{ padding: "12px 8px", textAlign: "left", color: "rgba(255,255,255,0.9)", fontWeight: "600" }}>Reference</th>
+                                <th style={{ padding: "12px 0", textAlign: "left", color: "rgba(255,255,255,0.9)", fontWeight: "600" }}>Status</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {resultsByReport[report.id].map((result, idx) => (
+                                <tr key={idx} style={{ borderTop: "1px solid rgba(255,255,255,0.05)" }}>
+                                  <td style={{ padding: "12px 8px 12px 0", color: "rgba(255,255,255,0.9)" }}>{result.testName}</td>
+                                  <td style={{ padding: "12px 8px", color: "rgba(255,255,255,0.9)" }}>
+                                    {result.value !== null
+                                      ? `${result.value}${result.unit ? " " + result.unit : ""}`
+                                      : result.textValue}
+                                  </td>
+                                  <td style={{ padding: "12px 8px", color: "rgba(255,255,255,0.7)" }}>
+                                    {result.referenceLow !== null && result.referenceHigh !== null
+                                      ? `${result.referenceLow} - ${result.referenceHigh}`
+                                      : "-"}
+                                  </td>
+                                  <td style={{ padding: "12px 0" }}>
+                                    <span style={{
+                                      color: resultStatusColor(result.status),
+                                      fontWeight: "600"
+                                    }}>
+                                      {resultStatusLabel(result.status)}
+                                    </span>
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Analysis Section */}
+                  {expandedAnalysisId === report.id && analysisByReport[report.id] && (
+                    <div style={{ marginTop: "24px", padding: "20px", background: "rgba(255,255,255,0.05)", borderRadius: "12px" }}>
+                      <h4 style={{ fontSize: "16px", fontWeight: "600", color: "#fff", marginBottom: "16px" }}>🧪 AI Analysis</h4>
+
+                      {analysisByReport[report.id].summary && (
+                        <p style={{ fontSize: "14px", color: "rgba(255,255,255,0.9)", lineHeight: "1.7", marginBottom: "16px" }}>
+                          {analysisByReport[report.id].summary}
+                        </p>
+                      )}
+
+                      {analysisByReport[report.id].findings.length === 0 ? (
+                        <p style={{ fontSize: "13px", color: "rgba(255,255,255,0.7)" }}>No individual findings</p>
+                      ) : (
+                        <div style={{ marginBottom: "16px" }}>
+                          {analysisByReport[report.id].findings.map((finding) => (
+                            <div key={finding.reportResultId} style={{ marginBottom: "12px", padding: "12px", background: "rgba(255,255,255,0.05)", borderRadius: "8px" }}>
+                              <span style={{ color: severityColor(finding.severity), fontWeight: "600", fontSize: "13px" }}>
+                                {severityLabel(finding.severity)}:
+                              </span>{" "}
+                              <span style={{ fontSize: "13px", color: "rgba(255,255,255,0.9)" }}>
+                                {finding.interpretation}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      {analysisByReport[report.id].recommendations && (
+                        <div style={{ marginTop: "16px", paddingTop: "16px", borderTop: "1px solid rgba(255,255,255,0.1)" }}>
+                          <h5 style={{ fontSize: "14px", fontWeight: "600", color: "rgba(255,255,255,0.9)", marginBottom: "8px" }}>📋 Recommendations</h5>
+                          <p style={{ fontSize: "13px", color: "rgba(255,255,255,0.8)", lineHeight: "1.6", whiteSpace: "pre-line" }}>
+                            {analysisByReport[report.id].recommendations}
+                          </p>
+                        </div>
+                      )}
+
+                      <p style={{ fontSize: "11px", color: "rgba(255,255,255,0.5)", marginTop: "16px" }}>
+                        ℹ️ AI-generated information is not a diagnosis. Discuss with a qualified clinician.
+                      </p>
+                    </div>
+                  )}
+
+                  {/* Intelligence Section */}
+                  {expandedIntelligenceId === report.id && (
+                    <IntelligencePanel
+                      reportId={report.id}
+                      insights={insightsByReport[report.id] || null}
+                      loading={generatingIntelligenceId === report.id}
+                      onGenerate={() => handleGenerateIntelligence(report.id)}
+                    />
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
-
-      {error && <p style={{ color: "crimson", marginTop: 12 }}>{error}</p>}
-
-      <button onClick={handleLogout} style={{ marginTop: 24 }}>
-        Log out
-      </button>
     </main>
   );
 }

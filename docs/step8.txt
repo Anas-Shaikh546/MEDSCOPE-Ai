@@ -1,0 +1,1361 @@
+Yes. Since the **core MedScope AI project is already complete**, I would treat OCR as a **post-completion enhancement**, not reopen Steps 4–8.
+
+The most important requirement is exactly what you said:
+
+> **Scanned reports must be detected reliably, OCR must be used only when necessary, and OCR output must never be trusted blindly as medical data.**
+
+I recommend building this as a **controlled OCR pipeline with multiple validation layers**, rather than simply "send PDF to OCR."
+
+# MedScope AI — OCR Detection & Scanned Report Support
+
+## 1. Final objective
+
+Currently your pipeline is effectively:
+
+```text
+PDF
+ ↓
+Text Extraction
+ ↓
+Medical Result Extraction
+ ↓
+ReportResult
+```
+
+This works for digitally generated PDFs.
+
+The new pipeline becomes:
+
+```text
+PDF
+ ↓
+PDF Classification
+ ↓
+ ┌───────────────────────┐
+ │                       │
+Text PDF             Scanned PDF
+ │                       │
+ ↓                       ↓
+Existing Parser        OCR
+ │                       │
+ └───────────┬───────────┘
+             ↓
+      Normalized Text
+             ↓
+     Existing Extraction
+             ↓
+        Validation
+             ↓
+        ReportResult
+```
+
+### Critical principle
+
+**OCR should only change how text is obtained.**
+
+It should **not create a second medical extraction system**.
+
+That means:
+
+```text
+Digital PDF ──┐
+              ├──> same extraction pipeline
+OCR PDF ──────┘
+```
+
+This is extremely important because it prevents your OCR implementation from creating a parallel, inconsistent interpretation system.
+
+---
+
+# 2. What we need to solve
+
+There are actually **four separate problems**:
+
+### Problem 1 — Is the PDF scanned?
+
+We need to distinguish:
+
+```text
+PDF with selectable text
+```
+
+from:
+
+```text
+PDF containing page images
+```
+
+and potentially:
+
+```text
+Mixed PDF
+Page 1 → text
+Page 2 → scanned image
+Page 3 → text
+```
+
+A simple "does PDF have text?" check is **not enough**.
+
+---
+
+### Problem 2 — OCR the correct pages
+
+Don't OCR everything automatically.
+
+If:
+
+```text
+Page 1 → digital text
+Page 2 → scanned
+Page 3 → digital text
+```
+
+only Page 2 should go through OCR.
+
+This reduces:
+
+* processing time
+* OCR errors
+* unnecessary computation
+
+---
+
+### Problem 3 — OCR can make mistakes
+
+For medical reports this is dangerous.
+
+OCR could turn:
+
+```text
+13.8
+```
+
+into:
+
+```text
+18.8
+```
+
+or:
+
+```text
+1.38
+```
+
+or:
+
+```text
+13.B
+```
+
+It could also confuse:
+
+```text
+0 ↔ O
+1 ↔ I
+5 ↔ S
+8 ↔ B
+```
+
+Therefore:
+
+> **OCR output must be treated as untrusted raw text.**
+
+---
+
+### Problem 4 — We need confidence
+
+The system should know:
+
+```text
+Was OCR used?
+Which pages?
+How confident was OCR?
+Were extracted medical values validated?
+```
+
+This gives you a trustworthy pipeline instead of silently pretending OCR is perfect.
+
+---
+
+# 3. Recommended architecture
+
+Do **not** modify the existing extraction architecture unnecessarily.
+
+Add an OCR layer before the existing extraction logic.
+
+```text
+                    PDF
+                     │
+                     ▼
+             PDF Analyzer
+                     │
+          ┌──────────┼──────────┐
+          │          │          │
+       TEXT       SCANNED     MIXED
+          │          │          │
+          │          ▼          │
+          │         OCR         │
+          │          │          │
+          └──────────┼──────────┘
+                     ▼
+              Extracted Text
+                     │
+                     ▼
+           Existing Step 4
+           Extraction Pipeline
+                     │
+                     ▼
+              ReportResult
+```
+
+The existing:
+
+```text
+ResultValidator
+PdfTextExtractor
+normalization
+controlled vocabulary
+```
+
+should remain the **source of truth for medical extraction**.
+
+---
+
+# 4. Phase 1 — PDF page classification
+
+First build a reliable scanner detector.
+
+For every page determine:
+
+```text
+TEXT
+SCANNED
+MIXED
+EMPTY
+```
+
+### Signals to use
+
+Don't rely on a single signal.
+
+Use multiple signals:
+
+### Signal A — Extracted text length
+
+For example:
+
+```text
+Page contains 2,000 characters
+→ likely digital
+```
+
+versus:
+
+```text
+Page contains 0–10 characters
+→ likely scanned
+```
+
+But this alone is insufficient.
+
+---
+
+### Signal B — Text density
+
+Calculate something like:
+
+```text
+characters / page area
+```
+
+A page containing only:
+
+```text
+Page 1
+```
+
+shouldn't necessarily be classified as a useful text page.
+
+---
+
+### Signal C — Image presence
+
+Check whether the page contains:
+
+* large raster images
+* full-page images
+* image occupying most of the page
+
+For example:
+
+```text
+Page
+ ┌───────────────────────┐
+ │                       │
+ │     FULL PAGE IMAGE   │
+ │                       │
+ │                       │
+ └───────────────────────┘
+```
+
+is a strong scanned-page signal.
+
+---
+
+### Signal D — Extracted text quality
+
+Even if a PDF technically contains text, it might contain:
+
+```text
+garbled characters
+```
+
+or almost no meaningful text.
+
+So classify based on **usable text**, not merely "text exists."
+
+---
+
+# 5. Phase 2 — OCR engine
+
+For the actual OCR layer, I recommend evaluating **PaddleOCR** first rather than building everything around basic Tesseract.
+
+Why?
+
+Medical reports often contain:
+
+* tables
+* multiple columns
+* small fonts
+* units
+* numeric values
+* headers
+* structured laboratory results
+
+The OCR system therefore needs more than simple line recognition.
+
+However, the architecture should hide the implementation behind an interface:
+
+```text
+OCRService
+```
+
+For example:
+
+```text
+OCRService
+    ↓
+PaddleOCR implementation
+```
+
+This means you can change the OCR engine later without rewriting MedScope.
+
+---
+
+# 6. OCR should operate page-by-page
+
+Don't convert an entire PDF blindly.
+
+Instead:
+
+```text
+PDF
+ ↓
+Page 1 → TEXT → existing extractor
+Page 2 → SCANNED → OCR
+Page 3 → TEXT → existing extractor
+Page 4 → SCANNED → OCR
+```
+
+Then combine:
+
+```text
+Page 1 text
++
+Page 2 OCR text
++
+Page 3 text
++
+Page 4 OCR text
+```
+
+while preserving page numbers.
+
+---
+
+# 7. Image preprocessing
+
+This is where OCR accuracy can improve significantly.
+
+Before OCR:
+
+```text
+PDF page
+ ↓
+Render image
+ ↓
+Preprocessing
+ ↓
+OCR
+```
+
+Potential preprocessing:
+
+* correct rotation
+* detect orientation
+* grayscale conversion
+* noise reduction
+* contrast normalization
+* appropriate scaling
+* deskew
+* crop unnecessary margins
+
+But don't aggressively preprocess every document.
+
+Some medical reports already have excellent scan quality.
+
+So:
+
+```text
+Original image
+ ↓
+OCR attempt
+ ↓
+Evaluate confidence
+ ↓
+Preprocess + retry only if necessary
+```
+
+This is better than always applying aggressive transformations.
+
+---
+
+# 8. OCR confidence
+
+This is one of the most important parts.
+
+The OCR engine should provide confidence information where possible.
+
+Store something like:
+
+```text
+OCRResult
+
+pageNumber
+rawText
+ocrConfidence
+processingTime
+```
+
+Potentially also word/region-level confidence.
+
+For example:
+
+```text
+Page 2
+
+Hemoglobin    13.8 g/dL
+
+OCR confidence:
+Hemoglobin → 0.98
+13.8       → 0.96
+g/dL       → 0.99
+```
+
+This lets you distinguish:
+
+```text
+HIGH CONFIDENCE
+```
+
+from:
+
+```text
+UNCERTAIN OCR
+```
+
+---
+
+# 9. The most important improvement: medical-value validation
+
+This is what makes the system **trustworthy**.
+
+Do not simply do:
+
+```text
+OCR
+ ↓
+"13.8"
+ ↓
+Save 13.8
+```
+
+Instead:
+
+```text
+OCR
+ ↓
+Candidate medical result
+ ↓
+Validation
+ ↓
+Accept / Reject / Review
+```
+
+---
+
+# 10. Existing controlled vocabulary becomes extremely valuable
+
+You already have your normalized test vocabulary.
+
+Use it.
+
+Suppose OCR returns:
+
+```text
+Haemoglobln 13.8 g/dL
+```
+
+The system can recognize that this is likely:
+
+```text
+Hemoglobin
+```
+
+But the correction must be controlled.
+
+Do **not** allow arbitrary fuzzy matching.
+
+Use:
+
+```text
+OCR text
+ ↓
+Normalization
+ ↓
+Controlled vocabulary matching
+ ↓
+Candidate
+ ↓
+Confidence threshold
+```
+
+For example:
+
+```text
+Hemoglobin → exact match
+Haemoglobin → known variant
+Hemoglobln → OCR correction candidate
+```
+
+Anything uncertain should remain:
+
+```text
+UNSUPPORTED / UNKNOWN
+```
+
+rather than being guessed.
+
+---
+
+# 11. Numeric validation
+
+This is particularly important for medical reports.
+
+Suppose OCR detects:
+
+```text
+Hemoglobin 18.B g/dL
+```
+
+The system should not silently convert this into:
+
+```text
+18.8
+```
+
+Instead:
+
+```text
+Invalid numeric token
+        ↓
+OCR correction candidate
+        ↓
+Check surrounding text
+        ↓
+Check OCR confidence
+        ↓
+Validate
+```
+
+If confidence remains insufficient:
+
+```text
+Do NOT create ReportResult
+```
+
+This is much safer.
+
+---
+
+# 12. Unit validation
+
+You already have explicit units in the project.
+
+Use them aggressively.
+
+For example:
+
+```text
+13.8 g/dL
+```
+
+is valid if the expected/observed unit is supported.
+
+But:
+
+```text
+13.8 XYZ
+```
+
+should not automatically become:
+
+```text
+13.8 g/dL
+```
+
+The system must never invent a unit.
+
+Your existing Step 6 rule remains:
+
+> **Unknown or unsupported units remain unsupported.**
+
+---
+
+# 13. Reference-range validation
+
+OCR may also misread:
+
+```text
+13.0 - 17.0
+```
+
+as:
+
+```text
+13.0 - 170
+```
+
+or:
+
+```text
+13.O - 17.O
+```
+
+Therefore reference ranges should also go through validation.
+
+But there is an important rule:
+
+> **Do not replace the report's reference range with a hardcoded medical range.**
+
+The report's supplied range remains authoritative for that report.
+
+---
+
+# 14. Layout-aware extraction
+
+This will be one of the hardest parts.
+
+Medical reports commonly look like:
+
+```text
+Test              Result       Unit       Reference Range
+----------------------------------------------------------
+Hemoglobin        13.8         g/dL       13.0 - 17.0
+WBC               7.2          10^3/uL    4.0 - 11.0
+Platelets         250          10^3/uL    150 - 450
+```
+
+OCR should preserve enough positional information to reconstruct the relationship:
+
+```text
+Test
+ ↓
+Result
+ ↓
+Unit
+ ↓
+Reference Range
+```
+
+Do not treat the page as one giant string if the OCR engine provides bounding boxes/layout information.
+
+This is one reason a layout-aware OCR engine is preferable.
+
+---
+
+# 15. Multi-column reports
+
+A report might contain:
+
+```text
+Left column          Right column
+
+CBC                  Lipid Profile
+Hemoglobin           Cholesterol
+WBC                  HDL
+Platelets            LDL
+```
+
+Naive OCR could read:
+
+```text
+Hemoglobin Cholesterol WBC HDL Platelets LDL
+```
+
+which can corrupt extraction.
+
+The OCR pipeline should therefore preserve:
+
+```text
+page
+block
+line
+word
+bounding box
+```
+
+and reconstruct reading order.
+
+---
+
+# 16. OCR confidence should NOT equal medical confidence
+
+Keep these separate:
+
+```text
+OCR confidence
+        ≠
+Extraction confidence
+        ≠
+AI confidence
+```
+
+For example:
+
+```text
+OCR confidence:        0.97
+Extraction confidence: 0.94
+AI confidence:         0.91
+```
+
+These represent completely different things.
+
+This separation should remain in your architecture.
+
+---
+
+# 17. Introduce an OCR processing status
+
+Your existing report status should not be unnecessarily redesigned.
+
+Instead, determine whether your current status model can represent:
+
+```text
+OCR_REQUIRED
+OCR_PROCESSING
+OCR_COMPLETED
+OCR_FAILED
+```
+
+If the current `ReportStatus` is not appropriate for this, introduce a dedicated OCR status rather than polluting extraction status.
+
+Conceptually:
+
+```text
+Report
+ ├── extraction status
+ └── OCR metadata
+```
+
+This keeps responsibilities clear.
+
+---
+
+# 18. OCR metadata
+
+I recommend storing enough metadata to reproduce/debug OCR behavior.
+
+Something conceptually like:
+
+```text
+ocr_used
+ocr_engine
+ocr_engine_version
+ocr_pages
+ocr_confidence
+ocr_processed_at
+```
+
+Potentially:
+
+```text
+ocr_attempts
+```
+
+if retries are implemented.
+
+Do **not** store unnecessary raw OCR data permanently if it creates privacy/storage concerns.
+
+---
+
+# 19. Confidence-based decision system
+
+I would define three broad outcomes:
+
+### HIGH confidence
+
+```text
+OCR confidence high
++
+recognized test
++
+valid numeric value
++
+valid unit
++
+valid structure
+```
+
+→ accept.
+
+### MEDIUM confidence
+
+```text
+OCR mostly reliable
+but one component uncertain
+```
+
+→ mark result as uncertain / require stronger validation.
+
+### LOW confidence
+
+```text
+Poor OCR
++
+unknown test
++
+ambiguous number
++
+invalid unit
+```
+
+→ reject the candidate.
+
+**Never "best guess" medical values.**
+
+---
+
+# 20. Retry strategy
+
+For difficult scans:
+
+```text
+First OCR
+   ↓
+Confidence evaluation
+   ↓
+Good?
+ ┌─┴─┐
+Yes  No
+ │    │
+Save  Preprocess
+      ↓
+      OCR again
+      ↓
+      Evaluate
+```
+
+Limit retries.
+
+For example:
+
+```text
+Maximum 2 OCR attempts
+```
+
+rather than repeatedly processing the same report.
+
+---
+
+# 21. Human-readable warning
+
+If OCR was required, the UI should tell the user.
+
+For example:
+
+```text
+⚠ Scanned report
+
+This report was processed using OCR. Some extracted values
+may be less reliable than text-based PDFs. Please verify
+important results against the original report.
+```
+
+And if a result has low confidence:
+
+```text
+⚠ Verification recommended
+
+This value was extracted from a scanned document and could
+not be validated with high confidence.
+```
+
+That transparency is important for a medical application.
+
+---
+
+# 22. Do not send OCR uncertainty into AI silently
+
+This is another critical safeguard.
+
+Suppose:
+
+```text
+Hemoglobin = 13.8
+```
+
+was OCR-derived with high confidence.
+
+Fine.
+
+But:
+
+```text
+LDL = 1?8
+```
+
+is uncertain.
+
+Don't let the AI receive:
+
+```text
+LDL = 198
+```
+
+as if it were a confirmed fact.
+
+Instead the context should distinguish:
+
+```text
+valueConfidence = LOW
+```
+
+or exclude the uncertain result entirely.
+
+The AI should know the difference between:
+
+```text
+confirmed extracted fact
+```
+
+and:
+
+```text
+uncertain OCR candidate
+```
+
+---
+
+# 23. Testing strategy
+
+This is where I would be particularly strict.
+
+You should build a dedicated OCR test dataset.
+
+### Category 1 — Perfect scans
+
+```text
+High-quality PDF
+Straight pages
+Large fonts
+Clear tables
+```
+
+Expected:
+
+```text
+Near-perfect extraction
+```
+
+---
+
+### Category 2 — Low-quality scans
+
+```text
+Blurred
+Low resolution
+Noise
+Compression
+```
+
+Expected:
+
+```text
+OCR confidence decreases
+uncertain results rejected
+```
+
+---
+
+### Category 3 — Rotated pages
+
+Test:
+
+```text
+90°
+180°
+270°
+```
+
+---
+
+### Category 4 — Tables
+
+Test:
+
+```text
+CBC
+Lipid profile
+Liver function
+Kidney function
+Thyroid
+```
+
+with multiple columns.
+
+---
+
+### Category 5 — Mixed PDF
+
+```text
+Page 1 → digital
+Page 2 → scan
+Page 3 → digital
+Page 4 → scan
+```
+
+This is particularly important.
+
+---
+
+### Category 6 — OCR traps
+
+Create examples containing:
+
+```text
+0/O
+1/I
+5/S
+8/B
+.
+,
+-
+/
+```
+
+and medical units.
+
+---
+
+# 24. Accuracy measurement
+
+Don't simply say:
+
+> "OCR works."
+
+Measure it.
+
+Create a ground-truth dataset:
+
+```text
+Original report
+      ↓
+Human-verified values
+      ↓
+Expected results
+```
+
+Then compare:
+
+```text
+Expected              OCR
+--------------------------------
+Hemoglobin 13.8       13.8
+WBC 7.2                7.2
+Platelets 250         250
+```
+
+Measure:
+
+### Detection accuracy
+
+Did we correctly identify scanned pages?
+
+### OCR accuracy
+
+Did OCR correctly read the text?
+
+### Extraction accuracy
+
+Did we correctly identify:
+
+```text
+test
+value
+unit
+reference range
+```
+
+### False acceptance rate
+
+This is especially important.
+
+How often did the system confidently accept an **incorrect medical value**?
+
+For MedScope, this is arguably more important than raw OCR character accuracy.
+
+---
+
+# 25. Trust model
+
+I recommend defining this explicitly:
+
+```text
+                 TRUST
+                   │
+          ┌────────┴────────┐
+          │                 │
+    Source evidence     Validation
+          │                 │
+          └────────┬────────┘
+                   ↓
+             ReportResult
+```
+
+The OCR engine itself is **not the source of truth**.
+
+The original PDF is.
+
+Therefore:
+
+```text
+Original PDF
+     ↓
+OCR
+     ↓
+Candidate text
+     ↓
+Medical extraction
+     ↓
+Validation
+     ↓
+ReportResult
+```
+
+---
+
+# 26. What happens when OCR cannot confidently read something?
+
+This is a very important product decision.
+
+The correct behavior is:
+
+> **Fail safely.**
+
+Not:
+
+> "Try to guess."
+
+Example:
+
+```text
+Original:
+Hemoglobin 13.8 g/dL
+```
+
+OCR:
+
+```text
+Hemoglobln 1?.8 g/dL
+```
+
+If validation cannot resolve it:
+
+```text
+Result:
+NOT EXTRACTED
+```
+
+rather than:
+
+```text
+Hemoglobin = 13.8
+```
+
+This may result in **less data**, but it produces a much more trustworthy system.
+
+---
+
+# 27. Implementation phases
+
+I would implement this in **8 controlled phases**:
+
+```text
+Phase 1
+PDF/page classification
+        ↓
+Phase 2
+OCR service abstraction
+        ↓
+Phase 3
+Image preprocessing
+        ↓
+Phase 4
+OCR + layout reconstruction
+        ↓
+Phase 5
+Existing extraction integration
+        ↓
+Phase 6
+Confidence + medical validation
+        ↓
+Phase 7
+Frontend OCR transparency
+        ↓
+Phase 8
+Accuracy benchmark + hardening
+```
+
+---
+
+# 28. Recommended final architecture
+
+```text
+                         PDF
+                          │
+                          ▼
+                 ┌─────────────────┐
+                 │ PDF Page Scanner │
+                 └────────┬────────┘
+                          │
+              ┌───────────┼───────────┐
+              ▼           ▼           ▼
+            TEXT       SCANNED      MIXED
+              │           │           │
+              │           ▼           │
+              │       OCR Engine      │
+              │           │           │
+              │    Preprocessing      │
+              │           │           │
+              └───────────┼───────────┘
+                          ▼
+                   Normalized Text
+                          │
+                          ▼
+                 Existing Extraction
+                          │
+                          ▼
+                 Candidate Results
+                          │
+                          ▼
+               ┌────────────────────┐
+               │ Validation Layer   │
+               │                    │
+               │ Test name          │
+               │ Numeric value      │
+               │ Unit               │
+               │ Reference range    │
+               │ OCR confidence     │
+               │ Layout consistency │
+               └─────────┬──────────┘
+                         │
+                  ┌──────┴──────┐
+                  ▼             ▼
+                ACCEPT        REJECT
+                  │             │
+                  ▼             ▼
+            ReportResult    Uncertain
+                  │
+                  ▼
+          Step 5 / Step 6 / Step 7
+```
+
+# 29. What I would NOT change
+
+Because your project is already finished:
+
+**Do not redesign:**
+
+* authentication
+* report ownership
+* Step 5 interpretation
+* Step 6 timeline
+* Step 7 intelligence
+* database architecture unnecessarily
+* AI provider
+* frontend architecture
+
+The OCR enhancement should effectively become:
+
+```text
+                NEW
+                 ↓
+PDF → OCR/Detection → Existing Step 4
+                         ↓
+                    Everything else
+                         ↓
+                     unchanged
+```
+
+That's the safest approach.
+
+---
+
+# 30. Final OCR success criteria
+
+I would consider the OCR enhancement complete only when:
+
+* [ ] Digital PDFs still work exactly as before
+* [ ] Scanned PDFs are detected automatically
+* [ ] Mixed PDFs are supported
+* [ ] Only necessary pages are OCR'd
+* [ ] OCR confidence is captured
+* [ ] Page/layout information is preserved
+* [ ] Existing extraction pipeline is reused
+* [ ] Medical vocabulary validation is reused
+* [ ] Numeric values are validated
+* [ ] Units are validated
+* [ ] Reference ranges are validated
+* [ ] Low-confidence values are rejected rather than guessed
+* [ ] OCR failures don't corrupt reports
+* [ ] AI knows when data came from uncertain OCR
+* [ ] User is informed when OCR was used
+* [ ] Original PDF remains the source evidence
+* [ ] Cross-user security remains unchanged
+* [ ] Accuracy is measured against human-verified ground truth
+* [ ] False acceptance rate is measured
+* [ ] Difficult scans have dedicated tests
+
+### The most important rule
+
+For MedScope, **OCR accuracy alone is not enough**.
+
+The real metric is:
+
+> **How often does MedScope produce a correct medical `ReportResult` from a scanned report without accepting an incorrect value?**
+
+That is the standard I would use to call this feature **accurate and trustworthy**.
+
+If you later want me to review the OCR against a **real scanned medical report**, upload a representative PDF and I can help you design the test/validation cases around its actual layout.

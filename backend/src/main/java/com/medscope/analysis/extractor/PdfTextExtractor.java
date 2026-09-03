@@ -1,5 +1,8 @@
 package com.medscope.analysis.extractor;
 
+import com.medscope.ocr.orchestrator.OcrOrchestrator;
+import com.medscope.ocr.orchestrator.OcrProcessingResult;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.pdmodel.PDDocument;
@@ -18,8 +21,11 @@ import java.io.IOException;
  * MedicalResultExtractor's job (Task 3), kept separate on purpose.
  */
 @Component
+@RequiredArgsConstructor
 @Slf4j
 public class PdfTextExtractor {
+
+    private final OcrOrchestrator ocrOrchestrator;
 
     // Below this average number of characters per page, we treat the
     // PDF as having no usable text layer (most likely a scanned image)
@@ -38,20 +44,36 @@ public class PdfTextExtractor {
             String rawText = stripper.getText(document);
 
             if (!hasUsableText(rawText, pageCount)) {
-                log.info("PDF has no usable text layer, treating as unsupported: pageCount={}", pageCount);
-                return ExtractedText.unsupported(pageCount);
+                log.info("No usable text layer, attempting OCR: pageCount={}", pageCount);
+                return extractWithOcr(pdfBytes, pageCount);
             }
 
             return ExtractedText.of(rawText, pageCount);
 
         } catch (IOException e) {
-            // A PDF that fails to even load is unsupported, not a hard
-            // failure - the report was already validated as a real PDF
-            // at upload time (magic bytes), so this is a "can't extract
-            // from this particular structure" case, not corruption we
-            // need to surface as FAILED.
             log.warn("PDF failed to load for text extraction", e);
             return ExtractedText.unsupported(0);
+        }
+    }
+
+    private ExtractedText extractWithOcr(byte[] pdfBytes, int pageCount) {
+        try {
+            OcrProcessingResult ocrResult = ocrOrchestrator.process(pdfBytes);
+            String extractedText = ocrResult.getExtractedText();
+
+            if (!hasUsableText(extractedText, pageCount)) {
+                log.warn("OCR returned no usable text, marking as unsupported");
+                return ExtractedText.unsupported(pageCount);
+            }
+
+            log.info("OCR extracted {} chars from {} pages, avg confidence: {}",
+                extractedText.length(), pageCount, ocrResult.getMetadata().getAverageConfidence());
+
+            return ExtractedText.of(extractedText, pageCount);
+
+        } catch (IOException e) {
+            log.error("OCR processing failed", e);
+            return ExtractedText.unsupported(pageCount);
         }
     }
 

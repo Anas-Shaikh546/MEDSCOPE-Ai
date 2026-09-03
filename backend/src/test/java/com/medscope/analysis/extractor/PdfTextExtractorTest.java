@@ -1,20 +1,35 @@
 package com.medscope.analysis.extractor;
 
+import com.medscope.ocr.model.OcrMetadata;
+import com.medscope.ocr.orchestrator.OcrOrchestrator;
+import com.medscope.ocr.orchestrator.OcrProcessingResult;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.pdmodel.PDPage;
 import org.apache.pdfbox.pdmodel.PDPageContentStream;
 import org.apache.pdfbox.pdmodel.font.Standard14Fonts;
 import org.apache.pdfbox.pdmodel.font.PDType1Font;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.InjectMocks;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.when;
 
+@ExtendWith(MockitoExtension.class)
 class PdfTextExtractorTest {
 
-    private final PdfTextExtractor extractor = new PdfTextExtractor();
+    @Mock
+    private OcrOrchestrator ocrOrchestrator;
+
+    @InjectMocks
+    private PdfTextExtractor extractor;
 
     @Test
     void textBasedPdf_isSupportedAndTextIsExtracted() throws IOException {
@@ -30,6 +45,20 @@ class PdfTextExtractorTest {
     @Test
     void blankPagePdf_isUnsupported() throws IOException {
         byte[] pdfBytes = buildBlankPdf();
+        when(ocrOrchestrator.process(any())).thenReturn(
+            OcrProcessingResult.builder()
+                .extractedText("")
+                .pageCount(1)
+                .metadata(OcrMetadata.builder()
+                    .ocrUsed(true)
+                    .averageConfidence(0.0)
+                    .ocrPages(List.of(0))
+                    .processedAt(java.time.Instant.now())
+                    .attempts(1)
+                    .preprocessingApplied(false)
+                    .build())
+                .build()
+        );
 
         ExtractedText result = extractor.extract(pdfBytes);
 

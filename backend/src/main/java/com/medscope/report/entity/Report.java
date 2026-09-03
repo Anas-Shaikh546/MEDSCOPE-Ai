@@ -76,6 +76,16 @@ public class Report {
     @Column(name = "test_date")
     private LocalDate testDate;
 
+    // OCR metadata for transparency (Phase 7)
+    @Column(name = "ocr_used")
+    private Boolean ocrUsed;
+
+    @Column(name = "ocr_confidence")
+    private Double ocrConfidence;
+
+    @Column(name = "ocr_pages")
+    private String ocrPages; // Comma-separated page numbers
+
     @PrePersist
     protected void onCreate() {
         Instant now = Instant.now();

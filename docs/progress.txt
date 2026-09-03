@@ -1,0 +1,656 @@
+# Step 7 Implementation Progress
+
+## Overview
+Step 7: Advanced Intelligence Layer - provides contextual, prioritized insights based on longitudinal health data from Steps 4-6.
+
+---
+
+## Task 1: Database Schema + Entities + Enums ✅ COMPLETE
+
+**Status:** Already implemented by user
+
+**What exists:**
+- Migration: `V7__create_intelligence.sql`
+  - Tables: `insight_generations`, `insights`, `insight_sources`
+  - Proper cascade relationships and indexes
+  - Versioning support via generation_number
+
+- Entities:
+  - `Insight.java` - one AI-generated insight with provenance
+  - `InsightSource.java` - links insight to source ReportResult
+  - `InsightGeneration.java` - versioning record for regeneration tracking
+
+- Enums:
+  - `InsightType` - TREND_CONTEXT, PERSISTENT_ABNORMALITY, SIGNIFICANT_CHANGE, MULTI_RESULT_PATTERN, FOLLOW_UP, GENERAL_CONTEXT
+  - `InsightPriority` - HIGH, MODERATE, LOW, INFORMATIONAL
+  - `InsightStatus` - GENERATED, VALIDATED, FAILED, DISMISSED
+  - `InsightGenerationStatus` - PENDING, IN_PROGRESS, COMPLETED, FAILED
+
+- Repositories:
+  - `InsightRepository.java`
+  - `InsightSourceRepository.java`
+  - `InsightGenerationRepository.java`
+
+---
+
+## Task 2: Intelligence Context Builder ✅ COMPLETE
+
+**Status:** Implemented and compilation errors fixed
+
+**What was created:**
+
+### DTOs (com.medscope.intelligence.dto):
+
+1. **IntelligenceContext.java**
+   - Main context object sent to AI
+   - Contains: reportId, reportDate, currentResults, historicalTrends, existingAnalysisSummary, existingRecommendations
+   - Follows step7.txt requirement: "IntelligenceContext should contain: Current report, Historical results, Current abnormalities, Historical abnormalities, Trends, Reference ranges, Dates, Units, Existing interpretation"
+
+2. **TestResultContext.java**
+   - Flattened view of one ReportResult for AI consumption
+   - Fields: resultId, testName, canonicalName, numericValue, textValue, unit, referenceLow, referenceHigh, status
+
+3. **TestTrendContext.java**
+   - Historical observations for one test with trend direction
+   - Fields: canonicalName, displayName, trendDirection, observations
+   - Trend direction comes from Step 6's TrendCalculator (deterministic)
+
+4. **HistoricalObservation.java**
+   - One data point in a test's timeline
+   - Fields: date, dateIsConfirmed, reportResultId, value, unit, referenceLow, referenceHigh, status
+
+### Service:
+
+**ContextBuilderService.java** (com.medscope.intelligence.service)
+   - Assembles IntelligenceContext from Step 4/5/6 data
+   - Pure data assembly - no AI, no business logic
+   - Main method: `buildContext(userId, reportId)` returns `Optional<IntelligenceContext>`
+   - Pulls from:
+     - ReportResultRepository (Step 4 extracted facts)
+     - AnalysisRepository (Step 5 interpretation)
+     - TimelineService (Step 6 trends)
+   - Ownership enforced at repository layer
+   - Follows step7.txt architecture: "Database → Context Builder → Structured IntelligenceContext → AI"
+
+**Compilation fixes applied:**
+- Line 56: Changed `findByReportId()` to `findAllByReportIdOrderById()` (correct repository method)
+- Line 110: Changed `trend.direction()` to `trend.trend()` (correct TestTrendDto record accessor)
+
+---
+
+## Task 3: Deterministic Prioritization Engine ✅ COMPLETE
+
+**Status:** Implemented
+
+**What was created:**
+
+### Files Created:
+
+1. **PrioritizationFlag.java** (com.medscope.intelligence.service)
+   - DTO representing one deterministic flag
+   - Fields:
+     - `InsightType type` - what kind of pattern (SIGNIFICANT_CHANGE, PERSISTENT_ABNORMALITY, TREND_CONTEXT)
+     - `InsightPriority priority` - urgency level (HIGH, MODERATE, LOW)
+     - `String testName` - canonical test name this flag applies to
+     - `List<Long> sourceResultIds` - report_result IDs that support this flag
+     - `String evidence` - human-readable explanation of why this was flagged
+   - Used as input to AI alongside IntelligenceContext
+
+2. **PrioritizationEngine.java** (com.medscope.intelligence.service)
+   - @Component with deterministic rule evaluation
+   - Main method: `evaluate(IntelligenceContext context)` returns `List<PrioritizationFlag>`
+   - **NO AI INVOLVEMENT** - pure rule-based logic
+
+### Rules Implemented:
+
+**Rule 1: Current Abnormalities** (`evaluateCurrentAbnormalities`)
+- Flags any numeric result outside its reference range
+- Checks both low and high bounds
+- Priority calculation:
+  - HIGH: deviation > 30% of reference range
+  - MODERATE: deviation ≤ 30% of reference range
+- Example flag evidence: "Current value 11.2 g/dL is below range (reference: 13.0-17.0)"
+- InsightType: SIGNIFICANT_CHANGE
+- sourceResultIds: single current result ID
+
+**Rule 2: Persistent Abnormalities** (`evaluatePersistentAbnormalities`)
+- Flags tests that have been abnormal across ≥3 reports
+- Requires at least 3 observations total
+- Checks historical data from timeline trends
+- Priority: always MODERATE
+- Example flag evidence: "Hemoglobin has remained outside reference range across 4 reports"
+- InsightType: PERSISTENT_ABNORMALITY
+- sourceResultIds: all abnormal report_result IDs
+
+**Rule 3: Significant Trends** (`evaluateSignificantTrends`)
+- Flags tests with INCREASING or DECREASING trend direction
+- Requires at least 3 observations
+- Uses Step 6's TrendCalculator output (deterministic, already computed)
+- Priority: always LOW (trends need context to determine urgency)
+- Example flag evidence: "Glucose shows increasing trend across 5 observations"
+- InsightType: TREND_CONTEXT
+- sourceResultIds: all observation report_result IDs
+
+### Helper Methods:
+
+- `determinePriority(TestResultContext, abnormalityType)` - calculates HIGH vs MODERATE based on 30% deviation threshold
+- `formatRange(low, high)` - formats reference range for evidence strings (handles null bounds)
+
+### Architecture Notes:
+
+- Pure deterministic logic - no external calls, no AI
+- Receives IntelligenceContext (assembled by ContextBuilderService)
+- Returns flags that AI will use to generate natural-language insights
+- Step 6's trend calculations are reused, not recalculated
+- Follows step7.txt: "not everything needs AI" - these flags reduce AI workload and improve consistency
+- Evidence strings are structured but readable - AI can use them verbatim or rephrase
+
+---
+
+## Task 4: FastAPI Intelligence Endpoint ✅ COMPLETE
+
+**Status:** Implemented
+
+**What was created:**
+
+### Files Created:
+
+1. **intelligence.py** (ai-service/app/models)
+   - Pydantic models for intelligence generation
+   - Models created:
+     - `InsightType` enum - TREND_CONTEXT, PERSISTENT_ABNORMALITY, SIGNIFICANT_CHANGE, MULTI_RESULT_PATTERN, FOLLOW_UP, GENERAL_CONTEXT
+     - `InsightPriority` enum - HIGH, MODERATE, LOW, INFORMATIONAL
+     - `TestResultContext` - current result with all fields (result_id, test_name, values, unit, reference range, status)
+     - `HistoricalObservation` - one data point with date, value, range, confirmation status
+     - `TestTrendContext` - test name + trend direction + observations list
+     - `PrioritizationFlag` - flag from Java engine (type, priority, test_name, source_result_ids, evidence)
+     - `IntelligenceContext` - full context (report_id, date, current results, trends, existing analysis)
+     - `GenerateInsightsRequest` - request body (context + flags)
+     - `GeneratedInsight` - one insight output (type, title, description, priority, confidence, source_result_ids, follow_up_questions)
+     - `GenerateInsightsResponse` - response body (status, insights list, model metadata, error_message)
+
+2. **intelligence_service.py** (ai-service/app/services)
+   - Service class handling OpenRouter API calls for intelligence generation
+   - Main method: `generate_insights(context, flags)` → `GenerateInsightsResponse`
+   - Prompt structure follows step7.txt section 11:
+     - **SYSTEM** - role definition
+     - **SAFETY RULES** - what AI must NOT do (no diagnosis, no fabrication, no invented ranges)
+     - **CONTEXT** - structured data (current results, trends, existing analysis, flags)
+     - **TASK** - what to generate (longitudinal patterns, explanations, questions)
+     - **OUTPUT SCHEMA** - exact JSON structure required
+     - **EXAMPLE** - concrete insight example
+   - Safety measures:
+     - All source_result_ids must come from provided context
+     - Confidence is AI's observation confidence, NOT medical certainty
+     - Follow-up questions are suggestions, NOT medical instructions
+     - Returns empty insights array if insufficient data
+   - Timeout: 45 seconds (longer than analysis endpoint due to complexity)
+   - Max tokens: 6000 (accommodates multiple insights)
+   - Temperature: 0.3 (consistent with analysis endpoint)
+
+3. **intelligence.py** (ai-service/app/routes)
+   - FastAPI router for `/intelligence/generate` endpoint
+   - POST endpoint accepting `GenerateInsightsRequest`
+   - Returns `GenerateInsightsResponse`
+   - Error handling:
+     - Configuration errors (missing API key) → 500
+     - AI failures → 500 with error message
+     - Wraps IntelligenceService
+
+### Files Modified:
+
+1. **main.py** (ai-service/app)
+   - Added `intelligence` router import
+   - Registered intelligence router with FastAPI app
+   - Now includes 3 routers: health, analyze, intelligence
+
+### Prompt Design:
+
+Following step7.txt section 11 (separated concerns):
+- **System instructions** - clear role definition
+- **Medical safety rules** - explicit boundaries (no diagnosis, no fabrication)
+- **Structured context** - formatted current results, trends, existing analysis, deterministic flags
+- **Output schema** - exact JSON structure with field constraints
+
+**Key Safety Features:**
+- AI never queries database (receives pre-assembled context)
+- All source IDs must exist in provided context
+- Confidence ≠ medical certainty (explicitly stated)
+- Uncertainty acknowledged when data insufficient
+- Follow-up questions ≠ medical instructions
+
+**AI Responsibilities (from step7.txt Task 4):**
+✅ Explain patterns
+✅ Summarize important changes
+✅ Connect related observations
+✅ Prioritize understandable explanations
+✅ Identify questions worth discussing with clinician
+✅ Explain uncertainty
+✅ Provide plain-language context
+
+**AI Must NOT (from step7.txt Task 4):**
+✅ Diagnose diseases
+✅ Prescribe medication
+✅ Change dosage
+✅ Invent missing results
+✅ Invent reference ranges
+✅ Invent historical data
+✅ Claim certainty without evidence
+✅ Override extracted facts
+✅ Modify ReportResult
+✅ Fabricate relationships between unrelated tests
+
+---
+
+## Task 5: Intelligence Service Orchestration + REST API ✅ COMPLETE
+
+**Status:** Implemented and tested successfully (102/102 tests passing)
+
+**What was created:**
+
+### Core Service Layer:
+
+1. **IntelligenceService.java** (com.medscope.intelligence.service)
+   - Main orchestration service following pattern from Step 5's AnalysisService
+   - Orchestrates: context → rules → AI → validation → persist
+   - Main methods:
+     - `generateInsights(userId, reportId)` - complete generation workflow
+     - `getAllInsights(userId)` - retrieve all user insights
+     - `getInsightsForReport(userId, reportId)` - retrieve insights for one report
+
+   **Generation Flow:**
+   1. **Ownership check** - verify report belongs to user
+   2. **Build context** - call ContextBuilderService
+   3. **Run rules** - call PrioritizationEngine (deterministic)
+   4. **Call AI** - call FastApiIntelligenceClient
+   5. **Validate** - call InsightValidator (reject fabricated IDs)
+   6. **Persist** - save generation + insights + sources
+
+   **Idempotency:**
+   - Follows Step 5 delete-then-insert pattern
+   - On regeneration: deletes old insights + sources, creates new generation
+   - Generation number increments (1, 2, 3...) for traceability
+   - Old generation records retained for history
+
+   **AI Failure Handling:**
+   - Creates FAILED generation record
+   - Does not affect ReportResult/Analysis/Timeline (frozen data)
+   - Returns error message to controller
+
+   **Empty Results:**
+   - Creates COMPLETED generation with zero insights
+   - Logged but not treated as failure
+
+2. **InsightValidator.java** (com.medscope.intelligence.validation)
+   - Critical safety layer preventing fabricated source IDs
+   - Validation rules:
+     - Rule 1: Must have at least one source result ID
+     - Rule 2: Every source result ID must exist in database
+     - Rule 3: Title and description must be present
+     - Rule 4: Type and priority must be set
+   - Invalid insights logged and rejected (not persisted)
+   - Follows step7.txt section 7: "If AI returns sourceResultIds: [999999] and result 999999 doesn't exist: REJECT"
+
+### AI Client Layer:
+
+3. **IntelligenceAiClient.java** (com.medscope.intelligence.client)
+   - Interface for AI provider abstraction
+   - Single method: `generateInsights(context, flags)` → `IntelligenceResponse`
+   - Follows step7.txt section 10: "Do not hardwire Step 7 to a provider"
+
+4. **FastApiIntelligenceClient.java** (com.medscope.intelligence.client)
+   - Implementation calling FastAPI `/intelligence/generate` endpoint
+   - Uses HttpClient with 60-second timeout
+   - HTTP/1.1 for uvicorn compatibility (same as Step 5)
+   - Jackson ObjectMapper for JSON serialization
+   - Error handling: returns FAILED status on exceptions
+   - Mirrors pattern from OpenRouterAiServiceClient
+
+5. **GeneratedInsightDto.java** (com.medscope.intelligence.client)
+   - DTO for AI response before validation
+   - Fields: type, title, description, priority, confidence, sourceResultIds, followUpQuestions
+
+6. **IntelligenceResponse.java** (com.medscope.intelligence.client)
+   - Response wrapper from AI provider
+   - Fields: status, insights, modelName, modelVersion, promptVersion, errorMessage
+
+### Supporting DTOs:
+
+7. **InsightGenerationResult.java** (com.medscope.intelligence.service)
+   - Result wrapper for generation operations
+   - Factory methods: `success()`, `failed()`, `notFound()`
+   - Fields: success, errorMessage, generation, insights
+
+8. **InsightGenerationSummary.java** (com.medscope.intelligence.service)
+   - API response DTO
+   - Fields: generationId, reportId, generationNumber, status, insightCount, createdAt, insights list
+
+### REST API:
+
+9. **IntelligenceController.java** (com.medscope.intelligence.controller)
+   - REST endpoints for intelligence operations
+   - Ownership enforced via `@AuthenticationPrincipal` (same pattern as all controllers)
+
+   **Endpoints:**
+   - `POST /api/insights/reports/{reportId}/generate` - generate insights for a report
+   - `GET /api/insights` - get all insights for authenticated user
+   - `GET /api/insights/reports/{reportId}` - get insights for specific report
+
+   **Security:**
+   - All methods require authentication
+   - UserId extracted from JWT (never client-supplied)
+   - Repository queries scoped by userId
+   - 404 returned for non-existent or unauthorized resources
+
+### Repository Updates:
+
+10. **InsightRepository.java** - Added methods:
+    - `findAllByGenerationId(Long generationId)` - retrieve insights without ordering
+
+11. **InsightSourceRepository.java** - Added methods:
+    - `deleteAllByInsightId(Long insightId)` - cascade delete sources
+
+### Architecture Decisions:
+
+**Ownership Enforcement:**
+- All queries scoped by userId from JWT
+- Report ownership verified before generation
+- User A cannot access User B insights
+
+**Idempotency Strategy:**
+- One generation record per report per run
+- Regeneration: delete old insights + sources, increment generation number
+- Generation history preserved for traceability
+
+**AI Provider Abstraction:**
+- IntelligenceAiClient interface (not hardwired to FastAPI)
+- FastApiIntelligenceClient implementation
+- Same pattern as Step 5's AiServiceClient
+
+**Error Handling:**
+- AI timeout → FAILED generation record
+- AI 500 → FAILED generation record
+- Validation failure → rejected insights logged
+- Report not found → 404
+- Report not owned → 404 (same as not found, security best practice)
+
+**Data Integrity:**
+- Validation prevents fabricated source IDs
+- Foreign keys enforce referential integrity
+- Cascade deletes configured in V7 migration
+- ReportResult/Analysis/Timeline never modified (frozen)
+
+### Safety Measures Implemented:
+
+✅ Ownership enforced (userId from JWT)
+✅ Validation layer rejects fabricated source IDs
+✅ AI failures handled gracefully (FAILED generation)
+✅ Idempotency (replace on regeneration)
+✅ Duplicate generation controlled (delete old, insert new)
+✅ Provider abstraction preserved
+✅ Frozen data layers (Step 4/5/6 untouched)
+
+### Testing Notes:
+
+- Service follows same patterns as AnalysisService (Step 5)
+- Controller follows same patterns as AnalysisController
+- Validation can be unit tested independently
+- AI client can be mocked for service tests
+- Integration tests should cover: ownership, idempotency, validation, AI failure
+
+**Bugs Fixed:**
+1. **Authentication Issue** - Changed from `@AuthenticationPrincipal UserPrincipal` to `@CurrentUser Long authenticatedUserId` to match project pattern
+2. **Repository Method** - Changed `existsByIdAndUserId()` to `findByIdAndUserId().isEmpty()` for ReportRepository
+3. **Test Configuration** - Added `ai.service.url=http://localhost:8000` to `application-test.properties` to fix Spring context initialization
+
+**Files Modified for Fixes:**
+- `IntelligenceController.java` - updated authentication mechanism
+- `IntelligenceService.java` - fixed repository method call
+- `application-test.properties` - added missing AI service URL property
+
+---
+
+## Task 6: Follow-up Questions Generation ✅ COMPLETE
+
+**Status:** Already implemented in Task 4
+
+**What was done:**
+
+Follow-up question generation was already wired into the AI intelligence generation system during Task 4. No additional work needed.
+
+### Implementation Details:
+
+**1. Database Schema (from Task 1):**
+   - `insights.follow_up_questions` column (TEXT, nullable)
+   - Stores newline-separated questions for clinical discussion
+
+**2. AI Prompt (from Task 4):**
+   - Prompt explicitly instructs AI to generate follow-up questions
+   - Questions are optional (can be null)
+   - Questions are suggestions, NOT medical instructions
+   - Example in prompt shows format and tone
+
+**3. Request/Response DTOs (from Task 4):**
+   - `GeneratedInsight` model includes `follow_up_questions` field
+   - Field is optional (can be null)
+   - Max length: 2000 characters
+   - Format: newline-separated text
+
+**4. Persistence (from Task 5):**
+   - `IntelligenceService` saves `followUpQuestions` to database
+   - Field copied from AI response DTO to entity
+   - Retrieved in API responses
+
+### AI Prompt Section (from Task 4):
+
+```
+OUTPUT SCHEMA:
+{
+    "insights": [
+        {
+            ...
+            "follow_up_questions": "Optional newline-separated questions for clinical discussion"
+        }
+    ]
+}
+
+EXAMPLE INSIGHT:
+{
+    ...
+    "follow_up_questions": "What could explain this persistent change?\nShould this result be monitored again?\nAre there other results that should be considered alongside it?"
+}
+```
+
+### Safety Guidelines (from step7.txt Task 5):
+
+✅ Questions are suggestions, not medical instructions
+✅ Questions help users prepare for clinical discussions
+✅ Questions do not prescribe actions
+✅ Questions acknowledge uncertainty
+✅ Questions focus on "what to discuss" not "what to do"
+
+### Example Questions Generated:
+
+**For persistent abnormality:**
+- "What could explain this persistent pattern?"
+- "Should this result be monitored again?"
+- "Are there other results that should be considered alongside it?"
+
+**For significant trend:**
+- "What factors might be driving this change?"
+- "Is this trend within expected variation?"
+- "Should any lifestyle or medication changes be discussed?"
+
+**For multi-result pattern:**
+- "How do these results relate to each other?"
+- "Are there additional tests that would provide context?"
+- "What symptoms or changes should be monitored?"
+
+### Task 6 Complete - No Additional Implementation Required
+
+All functionality described in step7.txt Task 5 ("Personalized insight and follow-up questions") was already implemented in Task 4 (AI prompt) and Task 5 (persistence and API).
+
+---
+
+## Task 7: Frontend Intelligence Dashboard ✅ COMPLETE
+
+**Status:** Implemented
+
+**What was created:**
+
+### Files Created:
+
+1. **types/intelligence.ts**
+   - TypeScript type definitions matching backend DTOs
+   - Types created:
+     - `InsightType` enum - TREND_CONTEXT, PERSISTENT_ABNORMALITY, SIGNIFICANT_CHANGE, MULTI_RESULT_PATTERN, FOLLOW_UP, GENERAL_CONTEXT
+     - `InsightPriority` enum - HIGH, MODERATE, LOW, INFORMATIONAL
+     - `InsightStatus` enum - GENERATED, VALIDATED, FAILED, DISMISSED
+     - `InsightGenerationStatus` enum - PENDING, IN_PROGRESS, COMPLETED, FAILED
+     - `Insight` interface - one insight with all fields (id, generationId, type, title, description, priority, confidence, followUpQuestions, status, createdAt)
+     - `InsightGenerationSummary` interface - response from intelligence endpoints (generationId, reportId, generationNumber, status, insightCount, createdAt, insights array)
+
+2. **services/intelligenceService.ts**
+   - HTTP client for intelligence endpoints following reportService.ts pattern
+   - Three methods matching backend endpoints:
+     - `generate(reportId)` - calls POST `/insights/reports/{reportId}/generate`
+     - `getAll()` - calls GET `/insights`
+     - `getForReport(reportId)` - calls GET `/insights/reports/{reportId}`
+   - Uses authClient for JWT token extraction
+   - Uses api.ts base client for HTTP operations
+
+3. **components/IntelligencePanel.tsx**
+   - React component displaying insights grouped by priority
+   - Props: reportId, insights, loading, onGenerate callback
+   - Features:
+     - Priority badge coloring (HIGH=red, MODERATE=orange, LOW=blue, INFORMATIONAL=gray)
+     - Expandable follow-up questions section
+     - Confidence percentage display
+     - Generate/Regenerate button
+     - Loading state ("Analyzing longitudinal health data...")
+     - Empty state ("No insights available. Click Generate...")
+     - Insights grouped and sorted by priority (HIGH → MODERATE → LOW → INFORMATIONAL)
+   - UI Components:
+     - `IntelligencePanel` - main panel container
+     - `InsightCard` - individual insight with expandable questions
+     - `priorityBadgeColor()` - badge colors
+     - `priorityLabel()` - human-readable labels
+
+### Files Modified:
+
+4. **app/dashboard/page.tsx**
+   - Added intelligence state management:
+     - `expandedIntelligenceId` - tracks which report's insights are visible
+     - `insightsByReport` - caches insights by report ID
+     - `generatingIntelligenceId` - tracks which report is generating
+   - Added intelligence handlers:
+     - `handleGenerateIntelligence()` - generate insights, cache result, expand panel
+     - `handleToggleIntelligence()` - toggle visibility, lazy-load if not cached
+   - Added imports:
+     - `intelligenceService` from services
+     - `InsightGenerationSummary` type
+     - `IntelligencePanel` component
+   - UI integration:
+     - Added "View Insights" / "Hide Insights" button (same row as View Results/Analyze)
+     - IntelligencePanel renders when `expandedIntelligenceId` matches report.id
+     - Error handling matches existing pattern (404 = "No insights yet", others shown as error)
+
+### UI/UX Design:
+
+**Layout:**
+- Intelligence panel appears below analysis section when expanded
+- Same visual hierarchy as results/analysis sections
+- Generate button in panel header (right-aligned)
+- Insights grouped by priority with count badges
+- Priority sections collapsible (each insight card is self-contained)
+
+**Priority Coloring:**
+- HIGH: #dc2626 (red) - critical findings
+- MODERATE: #ea580c (orange) - needs attention
+- LOW: #2563eb (blue) - informational trends
+- INFORMATIONAL: #64748b (gray) - general context
+
+**States:**
+1. **Loading:** "Analyzing longitudinal health data..." with gray background
+2. **Empty:** "No insights available. Click Generate..." with call to action
+3. **Loaded:** Insights grouped by priority with cards
+4. **Error:** Red error message below report buttons (existing pattern)
+
+**Insight Card Structure:**
+- Priority badge (colored, top-left)
+- Title (bold, 15px)
+- Description (14px, gray text, line-height 1.6)
+- Follow-up questions (expandable, blue button with arrow)
+- Confidence score (12px, gray, bottom)
+
+**Traceability:**
+- Source IDs validated during generation (backend)
+- Frontend displays complete insights with provenance
+- Evidence chain: Insight → sourceResultIds → ReportResult → Report → Timeline → Trends
+- (Full drill-down not implemented - insights already contain synthesized evidence in description)
+
+### Architecture Decisions:
+
+**Lazy Loading:**
+- Intelligence data fetched on-demand when user clicks "View Insights"
+- Cached in component state (same pattern as results/analysis)
+- Reduces initial page load
+
+**Error Handling:**
+- 404 = no insights yet → helpful message
+- Other errors → generic error message
+- Generate failures handled by backend (FAILED generation record)
+
+**State Management:**
+- Follows existing dashboard patterns exactly
+- insightsByReport dictionary for caching
+- generatingIntelligenceId for loading state
+- expandedIntelligenceId for visibility
+
+**Integration:**
+- Intelligence button placed after Analysis button
+- Same visual treatment as other report actions
+- IntelligencePanel encapsulates all intelligence UI
+- No changes to existing results/analysis sections
+
+### Safety & Compliance:
+
+✅ Insights are read-only (no edit/dismiss in MVP)
+✅ Confidence score displayed transparently
+✅ Follow-up questions clearly separated
+✅ No medical advice language
+✅ Backend validation ensures source provenance
+✅ All insights traceable to source ReportResults
+
+### Testing Checklist:
+
+- [ ] Generate insights for report with historical data
+- [ ] View cached insights
+- [ ] Regenerate insights
+- [ ] Empty state when no insights exist
+- [ ] Loading state during generation
+- [ ] Error handling (backend down, 404, 500)
+- [ ] Follow-up questions expand/collapse
+- [ ] Priority grouping and colors
+- [ ] Confidence score display
+
+---
+
+## Design Decisions Locked:
+
+1. **Package name:** `com.medscope.intelligence` ✅
+2. **AI service:** Add `/intelligence/generate` to existing FastAPI service ✅
+3. **Context builder:** Java assembles, FastAPI never queries DB ✅
+4. **Idempotency:** Replace insights wholesale on regeneration (delete old + insert new) ✅
+5. **Provenance:** `insight_sources` links to `report_result_id` only ✅
+6. **AI abstraction:** Separate `IntelligenceAiClient` interface in `intelligence.client` ✅
+7. **Task count:** 7 tasks total ✅
+
+---
+
+## Next Steps:
+
+1. User will test current state (Task 1 + Task 2)
+2. Resume with Task 3 when ready
+3. Follow step7.txt strictly - no over-engineering
+4. Use tokens wisely - keep implementations lean

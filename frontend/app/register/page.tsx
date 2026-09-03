@@ -29,41 +29,94 @@ export default function RegisterPage() {
   }
 
   return (
-    <main style={{ maxWidth: 360, margin: "80px auto" }}>
-      <h1>Register</h1>
-      <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-        <input
-          placeholder="First name"
-          value={firstName}
-          onChange={(e) => setFirstName(e.target.value)}
-          required
-        />
-        <input
-          placeholder="Last name"
-          value={lastName}
-          onChange={(e) => setLastName(e.target.value)}
-          required
-        />
-        <input
-          type="email"
-          placeholder="Email"
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-          required
-        />
-        <input
-          type="password"
-          placeholder="Password (min 8 characters)"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          minLength={8}
-          required
-        />
-        {error && <p style={{ color: "crimson" }}>{error}</p>}
-        <button type="submit" disabled={submitting}>
-          {submitting ? "Creating account..." : "Create account"}
-        </button>
-      </form>
+    <main style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", padding: "20px" }}>
+      <div className="glass-card fade-in" style={{ width: "100%", maxWidth: "400px", padding: "40px" }}>
+        <div style={{ textAlign: "center", marginBottom: "32px" }}>
+          <h1 style={{ fontSize: "32px", fontWeight: "700", margin: "0 0 8px 0", textShadow: "0 2px 10px rgba(0,0,0,0.1)" }}>
+            Get Started
+          </h1>
+          <p style={{ fontSize: "14px", color: "rgba(255,255,255,0.8)", margin: 0 }}>
+            Create your MedScope account
+          </p>
+        </div>
+
+        <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+          <div style={{ display: "flex", gap: "12px" }}>
+            <div style={{ flex: 1 }}>
+              <label style={{ display: "block", fontSize: "13px", fontWeight: "600", marginBottom: "8px", color: "rgba(255,255,255,0.9)" }}>
+                First Name
+              </label>
+              <input
+                placeholder="John"
+                value={firstName}
+                onChange={(e) => setFirstName(e.target.value)}
+                required
+                className="input-field"
+              />
+            </div>
+            <div style={{ flex: 1 }}>
+              <label style={{ display: "block", fontSize: "13px", fontWeight: "600", marginBottom: "8px", color: "rgba(255,255,255,0.9)" }}>
+                Last Name
+              </label>
+              <input
+                placeholder="Doe"
+                value={lastName}
+                onChange={(e) => setLastName(e.target.value)}
+                required
+                className="input-field"
+              />
+            </div>
+          </div>
+
+          <div>
+            <label style={{ display: "block", fontSize: "13px", fontWeight: "600", marginBottom: "8px", color: "rgba(255,255,255,0.9)" }}>
+              Email
+            </label>
+            <input
+              type="email"
+              placeholder="you@example.com"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              required
+              className="input-field"
+            />
+          </div>
+
+          <div>
+            <label style={{ display: "block", fontSize: "13px", fontWeight: "600", marginBottom: "8px", color: "rgba(255,255,255,0.9)" }}>
+              Password
+            </label>
+            <input
+              type="password"
+              placeholder="Min. 8 characters"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              minLength={8}
+              required
+              className="input-field"
+            />
+          </div>
+
+          {error && (
+            <div style={{ padding: "12px", background: "rgba(239, 68, 68, 0.2)", border: "1px solid rgba(239, 68, 68, 0.4)", borderRadius: "8px" }}>
+              <p style={{ color: "#fff", margin: 0, fontSize: "13px" }}>⚠️ {error}</p>
+            </div>
+          )}
+
+          <button type="submit" disabled={submitting} className="btn-primary" style={{ marginTop: "8px" }}>
+            {submitting ? "⏳ Creating account..." : "Create Account"}
+          </button>
+        </form>
+
+        <div style={{ marginTop: "24px", textAlign: "center" }}>
+          <p style={{ fontSize: "14px", color: "rgba(255,255,255,0.7)" }}>
+            Already have an account?{" "}
+            <a href="/login" style={{ color: "#fff", fontWeight: "600", textDecoration: "none" }}>
+              Sign in
+            </a>
+          </p>
+        </div>
+      </div>
     </main>
   );
 }
